@@ -31,6 +31,7 @@ options(max.print=999999)
 
 
 aru.dir  <- "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/WGDEEP/2019 Meeting docs/08. Personal folders/LiseHelenOfstad/"
+mp.dir  <- "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/WGDEEP/2019 Meeting docs/08. Personal folders/Martin Pastoors"
 # WBSS.data <- get(load(file.path(WBSS.dir,"run/data.RData")))
 # WBSS.fit  <- get(load(file.path(WBSS.dir,"run/model.RData" )))
 
@@ -40,7 +41,8 @@ length5b <-
   rename(length = Length_cm) %>% 
   gather(key=year, value=prop, X1994:X2018) %>% 
   mutate(year = as.integer(gsub("X","",year)),
-         area="5b")
+         area="5b",
+         source="wg")
 
 length6a <-
   read.csv(file.path(aru.dir,"LBI/6a/arg5b6a_numbers.csv"), header=TRUE) %>% 
@@ -49,7 +51,21 @@ length6a <-
   gather(key=year, value=prop, X1994:X2018) %>% 
   mutate(year = as.integer(gsub("X","",year)),
          prop = ifelse(year == 1995 , prop/2, prop),  ## Error in the input file
-         area="6a")
+         area="6a",
+         source = "wg")
+
+lengthpfa <-
+  read.csv(file.path(mp.dir,"pfa_arg_lengthfrequencies_2015_2019.csv"), header=TRUE) %>% 
+  data.frame() %>% 
+  mutate(division = gsub("27|\\.","", division)) %>% 
+  rename(area=division, number=catchnumber) %>% 
+  group_by(species, year, area, length) %>% 
+  summarize(number = sum(number, na.rm=TRUE)) %>% 
+  group_by(species, year, area) %>% 
+  mutate(prop = 100* number / sum(number, na.rm=TRUE),
+         number = number/10,
+         source="pfa") 
+
 
 catch <-
   read_excel(path=file.path(aru.dir,"GSS_Landings_Vb_VIa.xlsx"), 
@@ -66,25 +82,44 @@ catch <-
   mutate(year = as.numeric(year))
 
 raised <-
-  bind_rows(length5b, length6a) %>% 
+  bind_rows(length5b, length6a, lengthpfa) %>% 
   left_join(catch, by=c("year", "area")) %>% 
+  # mutate(number = ifelse(source == "wg", catch * prop, number))
   mutate(number = catch * prop)
 
-
+# plot all years (not pfa)
 raised %>% 
+  mutate(areasource = paste0(area, source)) %>% 
+  filter(source == "wg") %>% 
+  
   ggplot(aes(x=length, y=number, group=area)) + 
   theme_bw() +
-  geom_line(aes(colour=area)) +
+  geom_line(aes(colour=area), size=1) +
   facet_wrap(~year, ncol=9)
 
-lengths %>% 
-  ggplot(aes(x=year, y=number, group=area)) + 
-  geom_line(aes(colour=area)) +
-  facet_wrap(~area, scale="free_y")
+# plot
+raised %>% 
+  mutate(areasource = paste0(area, source)) %>% 
+  filter(year %in% 2015:2018, area %in% c("5b", "6a")) %>% 
+  filter(!(source == "pfa" & year >= 2017 & area == "5b")) %>% 
+  
+  ggplot(aes(x=length, y=number, group=source)) + 
+  theme_bw() +
+  geom_line(aes(colour=source), size=1) +
+  facet_grid(area~year)
 
+# plot summed
+raised %>% 
+  group_by(year, length) %>% 
+  summarize(number = sum(number)) %>% 
+  ungroup() %>% 
+  mutate(year = factor(year),
+         length = factor(length)) %>% 
+  
+  ggplot(aes(x=length, y=number, group=year)) + 
+  theme_bw() +
+  theme(legend.position="none") +
+  geom_bar(aes(fill=year), stat="identity") +
+  facet_wrap(~year, ncol=9) 
 
-glimpse(length5b)
-glimpse(length6a)
-
-View(bind_rows(length5b, length6a)$number)
 
