@@ -1,0 +1,476 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.5.dotx
+---
+
+```{r setup, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+# =======================================================================================
+# WGWIDE Stock summaries.Rmd
+# 
+# Generate stock summary report for WGWIDE
+#
+# 03/09/2017 first version
+# 06/08/2018 UPdated and prepared for WGWIDE 2018
+# 07/09/2018 Added link to SAG database for plotting. Currently reading from downloaded data. 
+#            Needs to be made through live connection. 
+# =======================================================================================
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
+knitr::opts_chunk$set(fig.width=10) 
+
+rm(list=ls())
+
+# library(devtools)
+library(icesDatras)   # install.packages("icesDatras")
+library(tidyices)     # devtools::install_github("fishvice/tidyices", dependencies = TRUE)
+library(tidyverse)    # tidying packages
+library(readxl)       # read excel
+library(lubridate)
+library(sf)
+library(sp)
+library(data.table)
+library(scales)
+library(RColorBrewer)
+library(pander)
+
+# library(gisland)      # devtools::install_github("einarhjorleifsson/gisland", dependencies = TRUE)
+
+library(maps)
+library(mapdata)
+library(mapproj)
+library(lubridate)
+library(viridis)
+
+library(animation)
+library(gganimate)
+
+# source my utils
+source("D:/GIT/mptools/R/my_utils.r")
+
+# Data path
+#datapath <- "D:/WGWIDE/2019/06. Data/_catch_by_rectangle"
+datapath <- "D:/temp"
+# datapath <- 
+#   "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/WGWIDE/2019 Meeting docs/06. Data/_catch_by_rectangle"
+
+# iadvice path
+iadvicepath <- paste(get_dropbox(), "/iAdvice", sep="")
+
+# set onedrive directory
+onedrive <- file.path(Sys.getenv('USERPROFILE'), 'PFA/PFA team site - PRF') 
+
+# load spatial datasets
+load(file.path(onedrive, "rdata/world.df.RData"))
+load(file.path(onedrive, "rdata/eez.df.RData"))
+load(file.path(onedrive, "rdata/fao.df.RData"))
+load(file.path(onedrive, "rdata/depth200.df.RData"))
+icesrectangles.df <-
+  get(load(file.path(onedrive, "rdata/icesrectangles.df.RData"))) %>% 
+  mutate(rect = as.character(rect)) %>% 
+  group_by(rect) %>% 
+  filter(row_number() == 1) %>% 
+  distinct(rect, lat, lon=long)
+
+load(file.path(onedrive, "rdata/fao.RData"))
+load(file.path(onedrive, "rdata/afsis.RData"))
+
+# list the available files
+files.list <- list.files(path=datapath, pattern="arg.xlsx", full.names=TRUE )
+# files.list <- list.files(path=datapath, pattern="WGWIDE catchesbyrect", full.names=TRUE )
+
+# read the files
+catch_by_species_year_country_raw <- data.frame()
+
+for (f in files.list) {
+  print(f)
+  
+  t <- 
+    read_excel(f, col_names=TRUE, col_types="text") %>% 
+    lowcase() %>% 
+    mutate_at(c("year","pnum"), list(as.integer) )  %>% 
+    # mutate_at(c("lat","lon","catch"), list(as.numeric) )  %>%
+    mutate_at(c("catch"), list(as.numeric) )  %>%
+    mutate(rect = gsub("\\s+","", rect)) %>% 
+    dplyr::select(-one_of("lat","lon")) %>% 
+    
+    # add lat lon for rectangle
+    left_join(dplyr::select(icesrectangles.df,
+                            rect, lat, lon), 
+              by="rect") 
+    
+    # add ices subdivision
+  
+  print(names(t))
+  
+  catch_by_species_year_country_raw <-
+    bind_rows(catch_by_species_year_country_raw, t)
+  
+}
+
+# load catch by rectangle data
+# load(file=file.path(datapath, "catch_by_species_year_country_raw.RData"))
+
+# load the stock data
+# iAssess <- 
+#   get(load(file=paste(iadvicepath, "/rdata/iAssess.RData",sep=""))) %>% 
+#   filter( (stockkeylabel == "mac.27.nea" & assessmentyear == 2018 & purpose == "advice") |
+#           (stockkeylabel == "hom.27.2a4a5b6a7a-ce-k8" & assessmentyear == 2018 & purpose == "advice") |
+#           (stockkeylabel == "whb.27.1-91214" & assessmentyear == 2018 & purpose == "advice") |
+#           (stockkeylabel == "her.27.1-24a514a" & assessmentyear == 2018 & purpose == "advice") ) %>% 
+#   mutate(species = toupper(substr(stockkeylabel,1,3)))  %>% 
+#   dplyr::select(species, year, stocksize) %>% 
+#   mutate(stocksize = as.integer(stocksize / 1000))
+
+# catch by year
+catch_by_species_year <- 
+  catch_by_species_year_country_raw %>% 
+  group_by(species, year, rect, lat, lon) %>% 
+  summarize(catch = sum(catch, na.rm=TRUE)) %>% 
+  
+  mutate(catch_interval = cut(as.integer(catch), breaks=c(1 %o% 10^(0:12)), dig.lab=10 ) ) %>% 
+  mutate(catch_interval = gsub(" ","", catch_interval)) %>% 
+  filter(!is.na(catch_interval)) %>% 
+  filter(grepl("\\,", catch_interval)) %>%   
+  group_by(species, year, rect, lat, lon, catch_interval) %>% 
+  summarize(catch = sum(catch, na.rm=TRUE))
+
+# read_excel(file.path(datapath, "WGWIDE catchesbyrect all.xlsx"), 
+#            col_names=TRUE, col_types="text") %>% 
+#   lowcase() %>% 
+#   mutate_at(c("year","pnum"), list(as.integer) )  %>% 
+#   mutate_at(c("lat","lon","catch"), list(as.numeric) )  %>%
+#   group_by(species,year,country) %>% 
+#   summarize(catch=sum(catch, na.rm=TRUE)) %>%
+#   spread(key=country, value=catch) %>% 
+#   View()
+
+# ================================================================================
+# FUNCTIONS
+# ================================================================================
+
+table_catch_by_year_country <- function(myspecies="MAC", myyears=NA) {
+  
+  # t <-
+    catch_by_species_year_country_raw %>% 
+    filter(species == myspecies) %>% 
+    {if ((length(myyears) == 1) & all(is.na(myyears))) {
+      filter(.)
+    } else {
+      filter(., year %in% myyears)
+    }} %>% 
+
+    group_by(species, year, country) %>% 
+    summarize(catch = as.integer(sum(catch, na.rm=TRUE))) %>% 
+    dcast(country ~ year, value.var="catch", sum, margins=c("year","country")) %>% 
+    # { if (ncol(.) > split) }
+    pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+
+} # end of table_catch_by_year_country
+
+# table_catch_by_year_country (myspecies="MAC")
+
+table_catch_by_year_species <- function(myyears=NA) {
+  
+  catch_by_species_year_country_raw %>% 
+    {if ((length(myyears) == 1) & all(is.na(myyears))) {
+      filter(.)
+    } else {
+      filter(., year %in% myyears)
+    }} %>% 
+
+    group_by(species, year) %>% 
+    summarize(catch = as.integer(sum(catch, na.rm=TRUE))) %>% 
+    dcast(species ~ year, value.var="catch", sum, margins=c("year","country")) %>% 
+    # { if (ncol(.) > split) }
+    pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+
+} # end of table_catch_by_year_species
+
+# table_catch_by_year_species()
+
+
+# myspecies = "MAC"; myyears = 1998:2017
+# myspecies = "MAC"; myyears = 1998
+# myspecies = "MAC"; myyears = NA
+# myspecies = "HOM"; myyears = NA
+
+plot_catch_by_year <- function(myspecies="MAC", myyears=NA, plot_catch=TRUE, plot_ssb=FALSE, ncol=6) {
+  
+  catch2 <-
+    catch_by_species_year %>% 
+    filter(species == myspecies) %>%
+    {if ((length(myyears) == 1) & all(is.na(myyears))) {
+      filter(.)
+    } else {
+      filter(., year %in% myyears)
+    }} %>% 
+    
+    {if (!all(is.na(myyears))) bind_rows(., data.frame(year = myyears)) else (.) }
+
+xlim <- range(catch2$lon, na.rm=TRUE)
+ylim <- range(catch2$lat, na.rm=TRUE)
+
+# catch2 %>% filter(lon == -41) %>% View()
+# catch_by_species_year_country %>%  filter(species=="HOM", lon == -41) %>% View()
+
+tc <-
+  catch2 %>% 
+  group_by(species, year) %>% 
+  summarize(catch = sum(catch, na.rm=TRUE)) %>% 
+  mutate(catch  = as.integer(catch/1000) ) %>% 
+  
+  group_by(species) %>% 
+  mutate(catch2 = ylim[1] + (catch / max(catch, na.rm=TRUE) * (ylim[2] - ylim[1])) )
+
+# ta <-
+#   iAssess %>% 
+#   filter(species %in% tc$species, year %in% tc$year)
+
+# t <-
+#   tc %>% 
+#   left_join(ta, by=c("species","year"))
+
+catch2 %>% 
+  filter(!is.na(catch_interval)) %>% 
+  ggplot(aes(lon, lat)) + 
+  theme_publication() +
+  theme(panel.border     = element_rect(colour="black" , size=0.2),
+        panel.grid.major = element_blank(),
+        strip.background = element_rect(colour="black", size =0.2),
+        plot.margin      = unit(c(0,0,0,0),"cm"),
+        plot.title       = element_text(hjust=0, vjust=0, size=10),
+        axis.text        = element_text(size=6),
+        legend.key.width = unit(0.4, "cm"), 
+        axis.title       = element_blank()) +
+  
+  coord_quickmap(xlim=xlim, ylim=ylim) +
+
+  geom_polygon(data=fao.df, aes(long, lat, group=group), fill = NA, size=0.2,
+               color="gray80", alpha=0.3) +
+
+  geom_tile(aes(fill = catch_interval, height=0.5, width=1), colour=NA, alpha=1.0) +
+  scale_fill_viridis(option = "plasma", direction = -1, discrete=TRUE) +
+
+  geom_polygon(data=world.df, aes(long, lat, group=group), fill = "cornsilk", 
+               size=0.1, color="black") +
+  
+  # { if(plot_catch & plot_ssb) { 
+  #   geom_label(data=t, aes(label=paste0("ssb:",stocksize,", catch:",catch)), 
+  #                                          x=-Inf, y=Inf, hjust=0, vjust=1, inherit.aes=FALSE)
+  # } else if (plot_catch) {
+  #   geom_label(data=t, aes(label=paste0("catch:",catch)), 
+  #                                          x=-Inf, y=Inf, hjust=0, vjust=1, inherit.aes=FALSE)
+  #   
+  # } else if (plot_ssb) {
+  #   geom_label(data=t, aes(label=paste0("ssb:",stocksize)), 
+  #                                          x=-Inf, y=Inf, hjust=0, vjust=1, inherit.aes=FALSE)
+  #   
+  # } } +
+
+  labs(x = NULL, y = NULL, size = "tons", title=unique(catch2$species)) +
+  guides(fill = guide_legend(nrow = 1, title="catch (tonnes)")) +
+  facet_wrap( ~ year, ncol=ncol)
+
+} # end of plot_catch_by_year
+
+
+plot_catch_by_year_and_country <- function() {
+  
+} # end of plot_catch_by_year_and_country
+
+plot_catch_by_year_animated <- function() {
+  
+} # end of plot_catch_by_year_animated
+
+
+# Plot lat and long by year
+
+plot_latlon_by_year <- function(myspecies="MAC", myyears = 2010:2018, xlim=c(-20,10), ylim=c(54,65) ) {
+
+  catch2 <-
+    catch_by_species_year %>% 
+    filter(species == myspecies) %>%
+    {if ((length(myyears) == 1) & all(is.na(myyears))) {
+      filter(.)
+    } else {
+      filter(., year %in% myyears)
+    }} %>% 
+    
+    group_by(species, year) %>% 
+    summarize(
+      lat = weighted.mean(lat, w=catch, na.rm=TRUE),
+      lon = weighted.mean(lon, w=catch, na.rm=TRUE) ) %>% 
+    
+    {if (!all(is.na(myyears))) bind_rows(., data.frame(year = myyears)) else (.) }
+
+  
+xlim <- xlim
+ylim <- ylim
+
+# catch2 %>% filter(lon == -41) %>% View()
+# catch_by_species_year_country %>%  filter(species=="HOM", lon == -41) %>% View()
+
+catch2 %>% 
+  ggplot(aes(lon, lat)) + 
+  theme_publication() +
+  theme(panel.border     = element_rect(colour="black" , size=0.2),
+        panel.grid.major = element_blank(),
+        strip.background = element_rect(colour="black", size =0.2),
+        plot.margin      = unit(c(0,0,0,0),"cm"),
+        plot.title       = element_text(hjust=0, vjust=0, size=10),
+        axis.text        = element_text(size=6),
+        legend.key.width = unit(0.4, "cm"), 
+        legend.position  = "none",
+        axis.title       = element_blank()) +
+  
+  coord_quickmap(xlim=xlim, ylim=ylim) +
+
+  geom_polygon(data=fao.df, aes(long, lat, group=group), fill = NA, size=0.2,
+               color="gray80", alpha=0.3) +
+  
+  geom_polygon(data=world.df, aes(long, lat, group=group), fill = "cornsilk", 
+               size=0.1, color="black") +
+
+  geom_point(aes(fill=factor(year), colour=factor(year)), size=6, shape=22) +
+  # geom_line(aes(colour=factor(year), group=species)) +
+  geom_text(aes(label=substr(year,3,4)), colour="darkgray", vjust=0.5, hjust=0.5) +
+  scale_fill_viridis(option = "plasma", direction = -1, discrete=TRUE) +
+  scale_colour_viridis(option = "plasma", direction = -1, discrete=TRUE) +
+  
+  labs(x = NULL, y = NULL, title=unique(catch2$species)) 
+  
+} # end of plot_latlon_by_year
+
+# plot_latlon_by_year(myspecies="MAC", myyears = 1999:2018, xlim=c(-20,10), ylim=c(54,65) )
+
+```
+Working document xx, WGWIDE 2019
+
+**Utilizing the full time-series of catch by rectangle**
+
+&nbsp;  
+
+Martin Pastoors, `r format(Sys.time(), '%d/%m/%Y')`
+
+**Abstract**
+
+**Introduction**
+
+WGWIDE and its precursors WGMHSA and WGNPBW have been publishing catch per rectangle plots in their reports for many years already. Catch by rectangle has been compiled by WG members and generally provide a WG estimate of catch per rectangle. In most cases the information is availalble by quarter whereas most recently, the data has been requested by month. So far, the catch by rectangle has only been presented for one single year in the WG reports. Here, we collated all the catch by rectangle data that is available for herring, blue whiting, mackerel and horse mackerel for as many years as available. 
+
+** Results **
+
+An overview of the available catches by species and year is shown in the text table below. For horse mackerel and mackerel, a long time series is available, starting in 2001 (HOM) and 1998 (MAC). The time series for herring and blue whiting are shorter (starting in 2011) although additional information could be derived from earlier WG reports. 
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+table_catch_by_year_species()
+
+```
+
+For each species an overview table is presented of catch by country and year and a figure with catch by rectangle and year. Catches by rectangle have been grouped in logarithmic classes (1-10, 10-100 etc). 
+
+**Discussion**
+
+While the aggregation and presentation of the catch per rectangle data for mackerel, horse mackerel, blue whiting and atlanto-scandian herring does not constitute rocket-science, it does provide us with meaningful insights into the changes of catching areas over time. This could be relevant also in understanding the impacts of climate change on fisheries and in relating changes in the distribution of prey or predator species (e.g. bluefin tuna). As such, these graphical representations of catching areas provide a useful addition to the WG report. 
+
+One important check that still needs to be carried out is the check on data availability by country and year that may not be consistent over the time series. Making the time-series complete would improve the useability of the information. 
+
+##### page break
+
+**Mackerel**
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+table_catch_by_year_country(myspecies="MAC")
+
+```
+
+_Table 1: Catch of mackerel (tonnes) included in the rectangle data by year and country_
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+plot_catch_by_year(myspecies="ARU", myyears = 1994:2018, ncol=5)
+# plot_catch_by_year(myspecies="MAC", myyears = 1998:2018, ncol=5)
+
+```
+
+_Figure 1: Catch of mackerel (tonnes) by year and rectangle. Catch by rectangle data do not represent the official catches and cannot be used for management purposes. In general, the total annual catches by rectangle are within 10 % from the official catches._
+
+```{r, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+plot_latlon_by_year(myspecies="MAC", myyears = 1999:2018, xlim=c(-20,10), ylim=c(54,65) )
+
+```
+
+##### page break
+
+**Horse Mackerel**
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+table_catch_by_year_country(myspecies="HOM")
+
+```
+
+_Table 2: Catch of horse mackerel (tonnes) included in the rectangle data by year and country_
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+# plot_catch_by_year(myspecies="HOM", myyears = 1998:2018, ncol=7)
+plot_catch_by_year(myspecies="HOM", ncol=5)
+
+```
+
+_Figure 2: Catch of horse mackerel (tonnes) by year and rectangle. Catch by rectangle data do not represent the official catches and cannot be used for management purposes. In general, the total annual catches by rectangle are within 10 % from the official catches._
+
+##### page break
+
+**Blue whiting**
+
+```{r, echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+table_catch_by_year_country(myspecies="WHB")
+
+```
+
+_Table 3: Catch of blue whiting (tonnes) included in the rectangle data by year and country_
+
+```{r, echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+plot_catch_by_year(myspecies="WHB", ncol=5)
+
+```
+
+_Figure 3: Catch of blue whiting (tonnes) by year and rectangle. Catch by rectangle data do not represent the official catches and cannot be used for management purposes. In general, the total annual catches by rectangle are within 10 % from the official catches._
+
+##### page break
+
+**Atlanto-scandian herring**
+
+```{r, echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+table_catch_by_year_country(myspecies="HER")
+
+```
+
+_Table 4: Catch of Atlanto-scandian herring (tonnes) included in the rectangle data by year and country_
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+plot_catch_by_year(myspecies="HER", ncol=4)
+
+```
+
+_Figure 4: Catch of Atlanto-scandian herring (tonnes) by year and rectangle. Catch by rectangle data do not represent the official catches and cannot be used for management purposes. In general, the total annual catches by rectangle are within 10 % from the official catches._

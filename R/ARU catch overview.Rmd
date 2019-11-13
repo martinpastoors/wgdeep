@@ -1,0 +1,130 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.5.dotx
+---
+
+```{r setup, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+# =======================================================================================
+# ARU catch overview.Rmd
+# 
+# Generate overviews of catch by country and area
+#
+# 13/11/2019 First coding
+# =======================================================================================
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
+knitr::opts_chunk$set(fig.width=10) 
+
+rm(list=ls())
+
+# library(devtools)
+library(tidyverse)    # tidying packages
+library(readxl)       # read excel
+library(scales)
+library(RColorBrewer)
+library(viridis)
+library(pander)
+
+# lowcase function
+lowcase <- function(df) {
+  names(df) <- tolower(names(df)) %>% gsub("\\?|\\s+|\\.+|_+|\\(|\\)","",.) 
+  df
+}
+
+# Data path
+# datapath <- "D:/temp"
+datapath <- "//community.ices.dk/ExpertGroups/benchmarks/2020/wkdeep/2014 Meeting docs/06. Data/combined"
+datapath  <- "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/benchmarks/2020/wkdeep/2014 Meeting docs/06. Data/combined"
+
+# list the available files
+files.list <- list.files(path=datapath, pattern="CatchAreaCountry", full.names=TRUE )
+
+# read the files
+catch <- data.frame()
+
+for (fn in files.list) {
+  
+  # print(fn)
+  t <- 
+    read_excel(fn, col_names=TRUE, col_types="text") %>% 
+    lowcase() %>% 
+    mutate(caton = as.numeric(caton)) %>% 
+    mutate(year  = as.integer(year))
+
+  catch <- bind_rows(catch, t)
+}
+
+
+```
+
+**Greater Silver smelt (ARU) catch overviews**
+
+Martin Pastoors, `r format(Sys.time(), '%d/%m/%Y')`
+
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+# table_catch_by_year_species()
+
+```
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+catch %>% 
+  group_by(stock, year) %>% 
+  summarize(caton = sum(caton, na.rm=TRUE)) %>% 
+  filter(year >= 1988) %>% 
+  
+  ggplot(aes(x=year, y=caton, group=stock)) +
+  theme_bw() +
+  geom_bar(aes(fill=stock), stat="identity") 
+
+```
+
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+catch %>% 
+  group_by(stock, country, year) %>% 
+  summarize(caton = sum(caton, na.rm=TRUE)) %>% 
+  filter(year >= 1988) %>% 
+  
+  ggplot(aes(x=year, y=caton, group=country)) +
+  theme_bw() +
+  geom_bar(aes(fill=country), stat="identity") +
+  facet_wrap(~stock)
+
+```
+
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+catch %>% 
+  group_by(stock, country, year) %>% 
+  summarize(caton = sum(caton, na.rm=TRUE)) %>% 
+  filter(year >= 1988) %>% 
+  
+  ggplot(aes(x=year, y=caton, group=stock)) +
+  theme_bw() +
+  geom_bar(aes(fill=stock), stat="identity") +
+  facet_wrap(~country)
+
+```
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+catch %>% 
+  group_by(division, year) %>% 
+  summarize(caton = sum(caton, na.rm=TRUE)) %>% 
+  filter(year >= 1988) %>% 
+  
+  ggplot(aes(x=year, y=caton)) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  geom_bar(aes(fill=division), stat="identity") +
+  facet_wrap(~division)
+
+```
