@@ -1,0 +1,1364 @@
+
+
+<!----------------------------------------------------------------------------------------------------->
+<!-- Check code PFA report for WGDEEP 2020_cpue standardisation for PFA and Faroer for improved code -->
+<!-- date: 23/04/2020                                                                                -->
+<!----------------------------------------------------------------------------------------------------->
+
+
+
+
+---
+output:
+  word_document: 
+    reference_docx: ../PFA_report_template_v1.9.dotx
+---
+
+```{r echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+# ---------------------------------------------------------------------------------------
+# greater silversmelt CPUE analysis for EU and Faroer
+#
+# 12/11/2019 adapted from SPRFMO CPUE analysis
+# 15/11/2019 work on the plane back from Iceland
+# ---------------------------------------------------------------------------------------
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	
+                      crop = TRUE , fig.width=10)
+knitr::knit_hooks$set(crop = hook_pdfcrop)
+
+# rm(list=ls())
+
+# Libraries
+library(tidyverse)     # combined package of dplyr, tidyr, ggplot, readr, purrr and tibble
+library(rmarkdown)     # rmarkdown functionality
+library(pander)        # tables
+library(lubridate)     # data handling
+library(reshape2)      # reshaping data; e.g. cast
+library(readxl)        # excel reader
+library(writexl)       # write excel files
+library(broom)         # clean up statistics
+library(scales)        # pretty scales
+library(stringr)       # string manipulations
+library(captioner)     # captioning of figures and tables
+
+library(mgcv)          # tensor spline for gam
+library(lme4)
+library(MASS)
+library(mgcViz)         # GAM output to ggplot
+
+# Source utilities
+source("../../mptools/R/my utils.R")
+# source("../../gisland/r/geo_inside.R")
+
+# lowcase function
+lowcase <- function(df) {
+  names(df) <- tolower(names(df)) %>% gsub("\\?|\\s+|\\.+|_+|\\(|\\)","",.) 
+  return(df) 
+  }
+
+
+# set paths
+onedrive  <- file.path(Sys.getenv('USERPROFILE'), 'PFA/PFA team site - PRF') 
+
+datapath <- "//community.ices.dk/ExpertGroups/benchmarks/2020/wkdeep/2014 Meeting docs/06. Data/aru.27.5b6a/CPUE"
+# datapath <- "../excel"
+#list.files(path=datapath)
+
+# default settings for tables
+panderOptions('table.alignment.default', function(df) ifelse(sapply(df, is.numeric), 'right', 'left'))
+
+# To number figures and tables
+fig_nums <- captioner::captioner(prefix = "Figure ")
+tab_nums <- captioner::captioner(prefix = "Table ")
+
+# load spatial data
+load(file.path(onedrive,"rdata/world.df.RData"))
+load(file.path(onedrive,"rdata/fao.df.RData"))
+load(file.path(onedrive,"rdata/icesrectangles.df.RData"))
+
+rect <- 
+  icesrectangles.df %>% 
+  group_by(rect) %>% 
+  filter(row_number() == 1) %>% 
+  dplyr::select(rect, long, lat)
+
+
+## ---- load CPUE data ---- ##
+cpue_faroer <- 
+  read_excel(file.path(datapath, "Faroe GSS_CommercialTrawlData1995-2019_WKGSS.xlsx"), 
+             col_names = TRUE,
+             col_types = "text") %>% 
+  lowcase() %>% 
+  setNames(gsub("icesrect","rect", names(.))) %>% 
+  setNames(gsub("hours","duration", names(.))) %>% 
+  setNames(gsub("gsskg","catch", names(.))) %>% 
+  setNames(gsub("depthm","depth", names(.))) %>% 
+  
+  mutate_at(c("year", "day"), list(as.integer)) %>% 
+  mutate_at(c("duration", "catch", "depth"), list(as.numeric)) %>% 
+  
+  # only data after 2005 (decision: Lise Ofstad, because since then >80% of the catch is covered)
+  filter (year > 2004) %>% 
+  
+  mutate(
+    catch = catch/1000,   # catch in tonnes
+    logcatch = log(catch), 
+#    cpue = ifelse(duration > 0, catch/duration, NA),   # cpue in kg/hour
+#    logcpue = ifelse((duration > 0 & logcatch > 0), logcatch/duration, NA),
+    date = as.Date(day, origin="1899-12-30"),
+    day  = yday(date),
+    week = as.numeric(week(date)),
+    month= as.factor(month),
+    time = format(strptime(sprintf("%04d", as.numeric(shoottime)), format="%H%M"), 
+                       format = "%H:%M"),
+    shoottime = ymd_hm(paste(date, time))) %>% 
+  
+  left_join(rect, by = "rect") %>% 
+
+  mutate(fleet="faroer") %>% 
+  dplyr::select(-time, -status, -gsscpue, -haulkg, -rect, -faroearea, -logcpue) 
+
+
+# PFA cpue
+cpue_pfa <-
+  get(load(file.path(onedrive, "rdata/arg.RData"))) %>% 
+  setNames(gsub("calc_depth","depth", names(.))) %>% 
+  setNames(gsub("shoot_time","shoottime", names(.))) %>% 
+  
+  filter (year > 2004,   # only data after 2005 (as for Faroese data)
+          division %in% c("27.5.b", "27.6.a")) %>% 
+  
+  mutate(species = ifelse(species %in% c("aru","ary","arg"), "arg","oth")) %>% 
+  filter(species == "arg") %>% 
+  group_by(vessel, trip, haul, shoottime, depth, date, year, rect) %>%
+  summarize(catch = sum(catch, na.rm=TRUE), 
+            duration = mean(duration, na.rm=TRUE)) %>% 
+  mutate(
+    logcatch = log(catch),
+    week = as.numeric(week(date)),
+    month= as.factor(month(date))) %>% 
+  
+  ungroup() %>% 
+
+  left_join(rect, by = "rect") %>% 
+  mutate(fleet = "pfa") %>% 
+  filter(!(vessel=="SCH302" & trip=="2017E"))  %>%   # trip with incorrect start and end times
+  dplyr::select(-rect, -trip, -haul)
+
+
+# combined cpue
+cpue_comb <- 
+  bind_rows(cpue_faroer, cpue_pfa) %>% 
+  ungroup() %>% 
+  mutate (date = as.Date(date, "%Y-%m-%d"),
+          month = ifelse(is.na(month), month(date), month),
+          month = as.factor(month),
+          day = day(date),
+          hset = as.numeric(strftime(shoottime, format="%H"))) %>% 
+  mutate (depth_cat= cut(depth, breaks=c(0, 200, 300, 400, 500, 600, 700, 2500), right = FALSE),
+          long_cat = as.factor(long),
+          lat_cat  = as.factor(lat),
+          hset_cat = cut(hset, include.lowest = TRUE, breaks=c(0,2,4,6,8,10,12,14,16,18,20,22,24))) %>% 
+  filter(duration < 12,    # sometimes duration > 20 hours. Issue with datetimes to be solved
+         long > -18,
+         long < 5,
+         !is.na(depth))
+
+
+# create dataset with effort and cpue metric
+nhauls <-
+  cpue_comb %>% 
+  group_by(year,month,week,depth_cat,lat_cat,long_cat,hset_cat,fleet) %>% 
+  summarise(catch    = sum(catch, na.rm=TRUE),
+            nhauls   = n(),
+            nvessels = n_distinct(vessel),
+            duration = sum(duration, na.rm=TRUE),
+            ndays    = n_distinct(day, na.rm = FALSE)
+            ) %>% 
+  mutate(
+#    effort = nhauls*duration, 
+#    effort = nhauls*duration, 
+    effort = ndays,
+    cpue = catch/effort,
+    logcatch = log(catch),
+    lcpue= logcatch/effort)
+
+
+# create dataset that will be used to model CPUE standardisation
+cpue_model <-
+  nhauls %>%
+  ungroup() %>% 
+  filter(week %in% c(15:34),
+         lat_cat %in% (c("59.5", "60", "60.5", "61", "61.5", "62", "62.5"))) %>% 
+  
+  # explanatory variables should be factors
+  mutate(year = as.factor(year),
+         week = as.factor(week)) %>% 
+  dplyr::select(-month,-logcatch,-lcpue, -long_cat, -nvessels) 
+
+
+# check the levels of each factor
+
+#levels(cpue_model$depth_cat)
+#levels(cpue_model$year)
+#levels(cpue_model$week)
+#levels(cpue_model$lat_cat)
+#levels(cpue_model$hset_cat)
+
+# some tables/plots follow to visualise the variables
+
+# check mean cpue by category of the explanatory variables
+# tapply(cpue_model$cpue, cpue_model$year, mean, na.rm=T)
+# tapply(cpue_model$cpue, cpue_model$depth_cat, mean, na.rm=T)
+# tapply(cpue_model$cpue, cpue_model$lat_cat, mean, na.rm=T)
+# tapply(cpue_model$cpue, cpue_model$week, mean, na.rm=T)
+
+# check mean values of by factor
+# plot.design(cpue ~  year + week + depth_cat + lat_cat + hset_cat  ,data=cpue_model, fun=mean,
+#            cex=0.6,ylab="catch", main="Mean catch by factor")
+
+
+# mosaicplot(~ year + month    , data=cpue_model,color=2:15,las=3,main="Distribution observations by: ")
+# mosaicplot(~ year + depth_cat, data=cpue_model,color=2:15,las=3,main="Distribution observations by: ")
+# mosaicplot(~ year + lat_cat  , data=cpue_model,color=2:15,las=3,main="Distribution observations by: ")
+# mosaicplot(~ year + hset_cat  , data=cpue_model,color=2:15,las=3,main="Distribution observations by: ")
+
+# interaction plots
+# with(cpue_model,interaction.plot(year,depth_cat,cpue,fixed=T,col=2:15,lty=1,trace.label="cpue by depth"))
+# with(cpue_model,interaction.plot(year,lat_cat,cpue,fixed=T,col=2:15,lty=1,trace.label="cpue by latitude"))
+# with(cpue_model,interaction.plot(year,hset_cat,cpue,fixed=T,col=2:15,lty=1,trace.label="cpue by time of setting"))
+
+```
+
+**CPUE standardization for greater silversmelt in 5b6a**
+
+F.J. Quirijns & M.A. Pastoors
+
+Corresponding author: mpastoors@pelagicfish.eu
+
+`r format(Sys.time(), '%d/%m/%Y')`
+
+
+<!--1. Introduction ------------------------------------------------------ -->
+
+# Introduction
+
+A standardized CPUE index from Faroese commercial pair trawlers (mainly fishing in 5b) has been presented at the WGDEEP working group for several years. In the latest years, also a CPUE index from the pfa (Pelagic Freezer Assosiation) trawlers (mainly fishing in 6a) has been presented. A suggestion from the working group was to investigate if these two series could be combined. This working document takes a closer look at the data and a combination of the two indices.
+
+Permission to utilize the Faroese (anonymised) data was granted by the Faroe Marine Research Institute. The analysis was carried out by scientists from the PFA.
+
+<!--2. Material and methods ------------------------------------------------------ -->
+
+# Material and methods
+
+Catch and effort data by haul for the commercial Faroese (1995-2019) and PFA fishery (2005-2008, 2012-2019) were available from Faroese logbooks and the PFA self sampling program. Catch from the Faroese trawlers logbook data account for more than 80% of the Faroese landings from 2005 and onwards, so therefore this period was chosen for calculating CPUE index. 
+
+The PFA self sampling logbooks account for varying percentages of the total registered catch by Germany and the Netherlands in area 5b6a: 
+
+```{r echo=FALSE,  message=FALSE, warning=FALSE}
+
+tab_nums(name    = "pfa_coverage", 
+         caption = "Percentage of the German and Dutch catch of silversmelt in area 5b6a covered by self sampling logbooks",
+         display = FALSE)
+
+
+# summed catch of ARU in tonnes
+tcatch <-
+  cpue_comb %>%
+  filter(fleet == "pfa") %>% 
+  group_by(fleet, year) %>% 
+  summarize(pfa_dataset = round(sum(catch),0)) %>% 
+  ungroup()
+
+zero_t <- data.frame("fleet" = c("pfa", "pfa", "pfa"), 
+                      "year" = 2009:2011, 
+                      "pfa_dataset" = c(0,0,0))
+tcatch2 <-
+  bind_rows(tcatch, zero_t) %>% 
+  arrange(fleet, year)
+
+# total catch from a CSV file
+totals <- read_delim(file.path(datapath, "German_Dutch_ARG_Catch.csv"), ";" ,col_names = TRUE)
+
+tcatch2 %>% 
+  left_join(totals, by="year") %>% 
+  mutate (
+    totalcatch = as.numeric(GER_NLD),
+    percentage = 100 * (pfa_dataset/totalcatch)) %>% 
+  dplyr::select(-GER_NLD) %>% 
+
+  mutate(year = as.character(year)) %>% 
+
+  pandoc.table(., 
+               style        = "simple",
+               split.tables = 100, 
+               split.cells  = c(rep(7,10)),
+               justify      = "right",
+               missing      =".",
+               big.mark     = ',', 
+               round        = c(0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0))
+```
+
+*`r tab_nums("pfa_coverage")`*
+
+
+
+
+**Fishing effort**
+
+Effort by fleet in the table below is expressed in:
+&nbsp;
+* Nvessels: Number of vessels registered in the dataset 
+&nbsp;
+* Ndays: Number of days when at least one haul has been reported. 
+&nbsp;
+* Season: The length of the fishing season, i.e. the number of days between the first haul and the last haul in a year.
+&nbsp;
+* Hfishing: Summed fishing hours
+&nbsp;
+* Nhauls: Number of hauls
+&nbsp;
+* Hauldur: Average duration of a fishing haul
+
+```{r echo=FALSE,  message=FALSE, warning=FALSE}
+
+tab_nums(name    = "effort", 
+         caption = "Number of vessels, length of the fishing season, fishing days, hours fished, number of hauls and mean haul duration. By fleet.",
+         display = FALSE)
+
+v <-
+  cpue_comb %>%
+  group_by(fleet, year) %>% 
+  distinct(vessel) %>% 
+  summarize(nvessels = n()) 
+
+zero_v <- data.frame("fleet" = c("pfa", "pfa", "pfa"), 
+                      "year" = 2009:2011, 
+                      "nvessels" = c(0,0,0))
+
+nvessels <- 
+  bind_rows(v, zero_v) %>% 
+  arrange(fleet, year)
+  
+days <-
+  cpue_comb %>% 
+  group_by(year,fleet) %>% 
+  distinct(year,fleet,day) %>% 
+  summarise(ndays = n())
+
+season <-  
+  cpue_comb %>% 
+  group_by(year, fleet) %>% 
+  summarise(mindate = min(date),
+            maxdate = max(date)) %>% 
+  mutate(season = maxdate - mindate) %>% 
+  ungroup() %>% 
+  dplyr::select(-mindate, -maxdate)
+
+hh <-
+  cpue_comb %>% 
+  group_by(year,fleet) %>% 
+  summarise(hfished = sum(duration),
+            nhauls = n(),
+            hauldur = mean(duration, na.rm = TRUE)) %>% 
+  ungroup() 
+
+table <-
+  nvessels %>% 
+  left_join(days) %>% 
+  left_join(season) %>% 
+  left_join(hh) %>% 
+  mutate(ndays   = ifelse(is.na(ndays), 0, ndays),
+         season  = ifelse(is.na(season), 0, season),
+         hfished = ifelse(is.na(hfished), 0, hfished),
+         nhauls  = ifelse(is.na(nhauls), 0, nhauls),
+         hauldur = ifelse(is.na(hauldur), 0, hauldur)) %>% 
+
+  mutate(year = as.character(year)) %>% 
+  pandoc.table(., 
+               style        = "simple",
+               split.tables = 100, 
+               split.cells  = c(rep(7,10)),
+               justify      = "right",
+               missing      =".",
+               big.mark     = ',', 
+               round        = c(0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0))
+
+```
+
+*`r tab_nums("effort")`*
+
+
+**Catch of greater silversmelt**
+
+The total catch in the dataset that is analysed for this study is presented in the following table. This does not represent the total catch of greater silversmelt, as not 100% of all catch logbooks is included. 
+
+```{r echo=FALSE,  message=FALSE, warning=FALSE}
+
+tab_nums(name    = "arucatch", 
+         caption = "Total catch (tonnes) of greater silversmelt and mean catch (tonnes) per haul by fleet",
+         display = FALSE)
+
+
+# summed catch of ARU in tonnes
+tcatch <-
+  cpue_comb %>%
+  group_by(fleet, year) %>% 
+  summarize(catch = round(sum(catch),0)) %>% 
+  ungroup()
+
+zero_t <- data.frame("fleet" = c("pfa", "pfa", "pfa"), 
+                      "year" = 2009:2011, 
+                      "catch" = c(0,0,0))
+tcatch2 <-
+  bind_rows(tcatch, zero_t) %>% 
+  arrange(fleet, year)
+
+
+hcatch <-
+  nhauls %>%
+  group_by(fleet, year) %>% 
+  summarise(catch_perhaul = mean(cpue, na.rm = TRUE)) %>%
+  mutate(catch_perhaul = round(catch_perhaul,1)) %>% 
+  ungroup()
+
+table <-
+  tcatch2 %>% 
+  left_join(hcatch) %>% 
+  mutate(catch_perhaul   = ifelse(is.na(catch_perhaul), 0, catch_perhaul)) %>% 
+
+  mutate(year = as.character(year)) %>% 
+
+  pandoc.table(., 
+               style        = "simple",
+               split.tables = 100, 
+               split.cells  = c(rep(7,10)),
+               justify      = "right",
+               missing      =".",
+               big.mark     = ',', 
+               round        = c(0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0))
+```
+
+*`r tab_nums("arucatch")`*
+
+
+##### page break
+
+**Fishing area by fleet: all hauls of all years on a map by fleet**
+
+All haul positions for all years where greater silversmelt has been caught. All fishing positions are assigned to rectangles of one degree longitude x 1/2 degree latitude. 
+
+```{r echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(name    = "allhaulpositions", 
+         caption = "Haul positions where greater silversmelt has been caught (all years combined). The size of the bubbles is related to the number of hauls in a rectangle of one degree longi-tude and 1/2 degree latitude.",
+         display = FALSE)
+
+invisible(gc())
+
+cpue_comb %>% 
+  filter(!is.na(long) | !is.na(lat)) %>% 
+  filter(!is.na(year)) %>% 
+  group_by(fleet,long,lat) %>% 
+  summarise(nhauls = n()) %>% 
+
+  ggplot(aes(x=long, y=lat, colour=fleet)) +
+  theme_publication() +
+  theme(axis.title       = element_blank(), 
+        text             = element_text(size=12),
+        legend.position  = "bottom", 
+        legend.key.width = unit(1, "cm"),
+        legend.key.size  = unit(2, "cm"),
+        panel.spacing    = unit(0.1, "lines") ) +  
+  
+  coord_quickmap(xlim=c(-18,2) , ylim=c(54,64)) +
+  geom_polygon(data=world.df, aes(long,lat,group=group), 
+               fill="cornsilk", size=0.25,color="gray15", alpha=0.7) +
+  
+  geom_point(aes(size = nhauls, colour=fleet), alpha=0.5) +
+  
+  labs(title="Greater silversmelt haul positions by fleet") +
+  facet_wrap(~fleet)
+
+# aru_byhour %>% filter(lat > -20) %>% View()
+
+
+```
+
+*`r fig_nums("allhaulpositions")`*
+
+
+
+
+
+**Haul positions by fleet and year**
+
+The yearly postions of greater silversmelt fishery of the offshore fleets. 
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(name    = "haulpositionsbyyear", 
+         caption = "Haul positions where greater silversmelt have been caught (by year). The size of the bubbles is related to the number of hauls in a rectangle of one degree longitude and 1/2 degree latitude.", 
+         display = FALSE)
+
+invisible(gc())
+
+cpue_comb %>% 
+  filter(!is.na(long) | !is.na(lat)) %>% 
+  filter(!is.na(year)) %>% 
+  group_by(year,fleet,long,lat) %>% 
+  summarise(nhauls = n()) %>% 
+  
+  ggplot(aes(x=long, y=lat)) +
+  theme_publication() +
+  theme(axis.title       = element_blank(), 
+        text             = element_text(size=8),
+        legend.key.width = unit(1, "cm"),
+        panel.spacing    = unit(0.1, "lines") ) +  
+  
+  coord_quickmap(xlim=c(-18,2) , ylim=c(54,64)) +
+  geom_polygon(data=world.df, aes(long,lat,group=group), 
+               fill="cornsilk", size=0.25,color="gray15", alpha=0.7) +
+  
+  geom_point(aes(size=nhauls, colour=fleet), alpha=0.3) +
+  
+  facet_wrap(~year)
+
+```
+
+*`r fig_nums("haulpositionsbyyear")`*
+
+
+
+##### page break
+
+**Mean catch of greater silversmelt per day, per one degree longitude and 1/2 degree latitude**
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "catchperdayperrect", 
+  caption = "Catch per day (tonnes) of greater silversmelt (summed by 1 degree longitude and 0.5 degree latitude)",
+  display = FALSE)
+
+invisible(gc())
+
+t <- 
+  cpue_comb %>% 
+  filter(!is.na(long) & !is.na(lat)) %>% 
+  filter(!is.na(year)) %>% 
+  
+  mutate(rect = encode_zchords(x=long, y=lat, dx = 1, dy = 0.5) ) %>% 
+
+  group_by(fleet, vessel, year, rect) %>% 
+  summarise(catch = sum(catch, na.rm=TRUE),
+            ndays = n_distinct(day, na.rm = FALSE)) %>% 
+  mutate(cpue = catch/ndays) %>%    # cpue in catch by number of hauls
+  group_by(year, rect) %>% 
+  summarise(cpue  = mean(cpue, na.rm=TRUE)) %>% 
+  separate(rect, c("long", "lat"), sep = ":", convert = TRUE, remove = FALSE) %>% 
+  
+  ungroup()
+
+b <- 
+  log_breaks(n=7)(c(1,max(dplyr::select(t, cpue), na.rm=TRUE))) 
+
+td <-
+  t %>% 
+  mutate(cpue = cut(cpue,breaks=b, include.lowest=T, dig.lab=10) ) %>% 
+  filter(!is.na(cpue))
+
+td %>% 
+  
+  ggplot(aes(x=long, y=lat)) +
+  theme_publication() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        text             = element_text(size=8),
+        legend.key.width = unit(1, "cm"),
+        panel.spacing    = unit(0.1, "lines") ) +  
+  
+  coord_quickmap(xlim=c(-18,2) , ylim=c(54,64)) +
+  geom_polygon(data=fao.df, aes(long, lat, group=group), 
+               fill = NA, size=0.25, color="gray60", alpha=0.3) +
+  geom_polygon(data=world.df, aes(long,lat,group=group), 
+               fill="cornsilk", size=0.25,color="gray15", alpha=0.7) +
+  geom_tile(aes(long, lat, fill = cpue), colour=NA, alpha=1.0) +
+  scale_fill_brewer(palette = "YlOrRd") + 
+  labs(x = NULL, y = NULL) +
+  ggtitle("Greater silversmelt catch by day and square") +
+  facet_wrap(~year, drop=FALSE)
+
+# filter(td, is.na(year)) %>% View()
+
+```
+
+*`r fig_nums("catchperdayperrect")`*
+
+
+
+
+##### page break
+
+**Greater silversmelt CPUE (tonnes/day) against latitude and longitude**
+
+All haul positions were assigned to rectangles of one degree longitude x 1/2 degree latitude. For presentation purposes, the positions were spread around the assigned value on the horizontal axis of the following graphs. 
+
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "cpuelatlon", 
+  caption = "CPUE (tonnes per day) of greater silversmelt against latitude (left) and longitude (right).",
+  display = FALSE)
+
+
+# latitude vs log CPUE
+p1 <- 
+  nhauls %>% 
+  ggplot(aes(lat_cat, cpue) ) +
+  theme_publication() +
+  theme(text             = element_text(size=9),
+        legend.key.width = unit(1, "cm"),
+        panel.spacing    = unit(0.1, "lines") ) +   
+  theme(legend.position="bottom") +
+  geom_jitter(aes(colour = fleet), alpha=0.5) 
+
+# longitude vs log CPUE
+p2 <-
+  nhauls %>% 
+  ggplot(aes(long_cat, cpue) ) +
+  theme_publication() +
+  theme(text             = element_text(size=9),
+        legend.key.width = unit(1, "cm"),
+        panel.spacing    = unit(0.1, "lines") ) +   
+  theme(legend.position="bottom") +
+  geom_jitter(aes(colour = fleet), alpha=0.5) 
+
+
+print(cowplot::plot_grid(p1, p2,
+                     ncol=2, scale=0.98, align="hv"),
+                     rel_heights = c(2, 2))
+
+
+```
+
+*`r fig_nums("cpuelatlon")`*
+
+
+##### page break
+
+**Catch vs. effort**
+
+The relationship between catch and effort should be consistent over the years, when standardising CPUE.  
+
+```{r echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "catchvseffort", 
+  caption = "Catch (tonnes) versus effort (days).",
+  display = FALSE)
+
+# breaks
+b <- 
+  nhauls %>% 
+  ungroup() %>%   
+  summarise(min=min(effort, na.rm=TRUE),
+            max=max(effort, na.rm=TRUE)) %>% 
+  unlist() %>% 
+  pretty(.,n=6)  
+
+
+# catch (kg) vs effort (hours fished)
+nhauls %>% 
+#  mutate(effort=cut(effort, breaks = b)) %>% 
+  ggplot(aes(as.factor(effort),catch))+
+  theme_publication() +
+  theme(axis.title       = element_blank(), 
+        text             = element_text(size=7),
+        panel.spacing    = unit(0.1, "lines") ) +    
+  geom_boxplot() +
+#  geom_point(aes(), size=0.8) +
+  ggtitle("Catch (tonnes) vs effort (number of hauls)") +
+  facet_wrap(~year) 
+
+```
+
+*`r fig_nums("catchvseffort")`*
+
+**Correlation between Y and X variables**
+
+An exploration was done of the relationship between the response variable and the explanatory variables and between the various explanatory variables amongst each other. 
+
+```{r echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "correlation", 
+  caption = "Relationships between Response Variable (Catch/day) and Explanatory variables (year, week, depth, latitude and time of setting",
+  display = FALSE)
+
+
+p1 <- NULL
+p2 <- NULL
+p3 <- NULL
+p4 <- NULL
+p5 <- NULL
+
+p1 <-
+  cpue_comb %>% 
+  ggplot(aes(x=lat_cat,y=depth)) +
+  labs(x = "Latitude", y = "Depth (m)", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=12) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot() 
+
+p2<- 
+  cpue_comb %>% 
+  ggplot(aes(x=long_cat,y=depth)) +
+  labs(x = "Longitude", y = "Depth (m)", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=12) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+print(cowplot::plot_grid(p1, p2,
+                     ncol=1, scale=0.98, align="hv"),
+                     rel_heights = c(2, 2))
+
+
+# relationship of catch (response variable) and year, month & week
+p3 <-
+  nhauls %>% 
+  ggplot(aes(x=as.factor(year),y=cpue)) +
+  labs(x = "Year", y = "cpue", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=10) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+p4 <-
+  nhauls %>% 
+  ggplot(aes(x=month,y=cpue)) +
+  labs(x = "Month", y = "cpue", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=10) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+
+p5 <-
+  nhauls %>% 
+  ggplot(aes(x=as.factor(week),y=cpue)) +
+  labs(x = "Week", y = "cpue", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=10) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+
+print(cowplot::plot_grid(p3, p4, p5, 
+                     ncol=1, scale=0.98, align="hv"),
+                     rel_heights = c(2, 2))
+
+
+
+# relationship of cpue (response variable) and candidate explanatory variables
+
+p6 <-
+  nhauls %>% 
+  ggplot(aes(x=depth_cat,y=cpue)) +
+  labs(x = "Depth", y = "cpue", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=10) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+p7 <-
+  nhauls %>% 
+  ggplot(aes(x=lat_cat,y=cpue)) +
+  labs(x = "Latitude", y = "cpue", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=10) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+p8 <-
+  nhauls %>% 
+  ggplot(aes(x=long_cat,y=cpue)) +
+  labs(x = "Longitude", y = "cpue", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=10) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+p9 <-
+  nhauls %>% 
+  ggplot(aes(x=hset_cat,y=cpue)) +
+  labs(x = "Time of setting (h)", y = "cpue", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=10) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+
+print(cowplot::plot_grid(p6, p7, p8, p9, 
+                     ncol=2, scale=0.98, align="hv"),
+                     rel_heights = c(2, 2))
+
+
+nhauls %>% 
+  ggplot(aes(x=as.factor(fleet),y=cpue)) +
+  labs(x = "Fleet", y = "cpue", title="") +
+  theme_publication() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        panel.grid.major   = element_blank(), 
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray"),
+        text               = element_text(size=10) ,
+        legend.position    = c(.5, 1.1),
+        legend.background  = element_rect(fill="transparent",colour=NA),
+        legend.text.align  = 1  )  +
+  geom_boxplot()
+
+
+
+#3. Diagnosis of orthogonality
+
+#Orthogonality means that the the treatment combinations are equally represented and
+#there are are all cells are filled. This is rarely the case, and severe imbalance can lead
+#to spurious results and usually a failure of the model to work (or, in the case if R, failure
+#to converge). 
+
+#table(nhauls$depth_cat, nhauls$year)      # No issue
+#table(nhauls$hset_cat, nhauls$year)       # No issue
+
+#table(nhauls$week, nhauls$year)           # week 15-34: before and after 4 or more zeros 
+#table(nhauls$month, nhauls$year)          # Issue: fisheries in November-May is rare. 
+                                           # Select only hauls in June-October. 
+#table(nhauls$long_cat, nhauls$year)       # Issue: few data <-11 and >-7. But this is no explanatory                                                          # variable in the model, so we'll leave nothing out. 
+#table(nhauls$lat_cat,  nhauls$year)       # Issue: few data <59 and >62. Select only this range of lats
+                                           # but only keep this in if latitude is kept as explanatory variable
+
+
+
+
+
+```
+
+*`r fig_nums("correlation")`*
+
+##### page break
+
+
+**Modelling approach**
+
+The general modelling approach has been to use a GLM model to assess the dependency on the CPUE (catch/day) of greater silversmelt on different variables. In the first instance, a test has been carried out to apply a negative binomial probability distribution to the catch data. 
+
+The basic model consists of CPUE (catch/day) as the response variable. The main explanatory variable is year (as factor). Other potential explanatory variables are explored: week, depth, latitude and time of setting the net. Based on the percentages of deviance explained by variable, variables were selected (>5%) or rejected (<5%) for the model.
+
+A single fleet analysis was carried out to assess the year trends in CPUE if the data from one of the two contracting parties was left out.
+
+<!--3. Results ------------------------------------------------------ -->
+
+# Results
+
+**Probability distribution for catch by haul**
+
+The CPUE (catch per day) data fits closely to a negative binomial distribution. 
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "negbinom", 
+  caption = "Fitting a negative binomial distribution through the CPUE data",
+  display = FALSE)
+
+# Plot the catch data distribution as a histogram and fit a negative binomial through it. 
+
+# First for Catch as the variable to be explained
+fit.params  <- fitdistr(round(nhauls$cpue), "Negative Binomial")
+res         <- hist(nhauls$cpue,breaks=100, plot=FALSE)
+df          <- data.frame(res$density, res$mids) %>% 
+  mutate(fit = dnbinom(res.mids, 
+                       size=fit.params$estimate["size"], 
+                       mu=fit.params$estimate["mu"]))
+
+ggplot(df, aes(res.mids, res.density)) +
+  theme_publication() +
+  geom_bar(stat="identity", fill=NA, colour="black") +
+  geom_line(aes(y=fit), colour="red") +
+  labs(x="cpue", y="density")
+
+```
+
+*`r fig_nums("negbinom")`*
+
+
+
+
+
+##### page break
+
+**Modelling the first linear effect next to the year trend**
+
+The basic model consists of CPUE (tonnes per day) as the response variable. Year (as factor) was included as the main explanatory variable. Week, depth, latitude, hour of setting the net and fleet are the other potential explanatory variables that are explored. 
+
+A log-link function is applied, because we use a Negative Binomial probability distribution. 
+
+Start model: *CPUE ~ year + week + depth + latitude + time_of_setting + fleet*
+
+Variable fleet explained less than 5% (1.5%) of the deviance and was removed from the model:  
+
+Model 2: *CPUE ~ year + week + depth + latitude + time_of_setting*
+
+All variables explained more than 5% of the deviance (at least 8%). However, a third model was tested without the variables that explained less than 10%. 
+
+Model 3: *CPUE ~ year + week + depth*
+
+AN Chi Square test was done to compare the performance of model 2 and model 3. Model 3 came out best, with a lower negative log likelihood (-62914 model 3 vs. -62733 model 2) and a lower theta (3.4 model 3 vs. 3.5 model 2). Therefore, the final model that was chosen was model 3.  
+
+Final model: *CPUE ~ year + week + depth*
+
+
+
+```{r echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "diagnostics", 
+  caption = "Diagnostics for best fitting Negative binomial GLM: CPUE ~ year + week + depth",
+  display = FALSE)
+
+
+options(contrast=c("contr.SAS","contr.poly"))
+# This is important for the ordering of factors: the base level is set to be
+# the last level of the factor. More explanations: ?contrasts
+
+
+# Run GLM. (Put the factors that you want to keep and that you think are most important first, e.g. year, season, etc...). ?glm
+
+# First model 
+form1 <- as.formula(cpue ~ year + week + depth_cat + lat_cat + hset_cat + fleet) # this is the model
+
+glm1 <- glm.nb(form1,                 # input formula is form1
+               data=cpue_model,       # input dataset
+               link=log,              # log link function because of the negative binomial
+               na.action=na.exclude)  # all NAs will be removed
+
+#class(glm1)
+#names(glm1)
+#summary(glm1)
+#names(summary(glm1))
+
+# 1. Ftest
+
+# anova(glm1,test="F")   #everything is highly significant
+
+# 2. Deviance: an extension of the F-test
+
+# create deviance table from the glm. The difference in deviance is used as a measure 
+# of discrepancy between successive models. 
+
+GetDevianceTable=function(glm){
+  tmp <- anova(glm,test="Chisq")
+  tmp <- as.data.frame(tmp)
+  tmp$PercDevExp <- 100*(tmp$Deviance/(max(tmp[,4])-min(tmp[,4])))
+  row.names(tmp)[tmp$PercDevExp >= 5.0]
+  DevTableProPos <- tmp
+  DevTableProPos   }
+
+devtable_glm1 <- GetDevianceTable(glm1)
+# conclusion from deviance table: fleet explains 1.5% (i.e. <5%) of the deviance, 
+# so fleet is removed from the model.
+
+# second model: without fleet
+form2 <- as.formula(cpue ~ year + week + depth_cat + lat_cat + hset_cat) # this is the model
+
+glm2 <- glm.nb(form2,                 # input formula is form1
+               data=cpue_model,       # input dataset
+               link=log,              # log link function because of the negative binomial
+               na.action=na.exclude)  # all NAs will be removed
+
+# anova(glm2,test="F")  # Ftest - everything is highly significant
+ devtable_glm2 <- GetDevianceTable(glm2)
+# anova(glm2,glm1,test="Chisq")   # Choose glm3: 2xlog-lik is higher for glm3 and the theta is lower.
+
+# conclusion from deviance table: all variables explain at least 8% (i.e. >5%) of the deviance, 
+# so all variables are selected.
+
+# third model: for comparison, without variables that explained <10% of deviance, i.e. lat and hset
+ form3 <- as.formula(cpue ~ year + week + depth_cat) 
+ glm3 <- glm.nb(form3, data=cpue_model, link=log, na.action=na.exclude)
+# anova(glm2,test="F")  # Ftest - everything is highly significant
+ devtable_glm3 <- GetDevianceTable(glm3)
+
+# compare model 1 and model 2: 
+# anova(glm3,glm2,test="Chisq")   # Choose glm3: 2xlog-lik is higher for glm3 and the theta is lower.
+
+
+# Test for convergence
+glmfinal <- glm.nb(form3, 
+                   data=cpue_model, 
+                   link=log, 
+                   na.action=na.exclude,
+                   control=glm.control(epsilon = 1e-08, # change between iterations. 
+                                                        # once it is this small it stops
+                                       maxit = 100 )    # no more than 100 iterations
+                   )
+
+#glmfinal$converged   # TRUE if the model converges --> in this case, model glm2 converged. 
+
+finalglm <- glm3
+
+# plot diagnostics for glm2
+par(mfrow=c(2,2)); gam.check(finalglm)
+
+```
+
+*`r fig_nums("diagnostics")`*
+
+##### page break
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+tab_nums(
+  name    = "devtable", 
+  caption = "Deviance table: percentage deviation explained by variable.",
+  display = FALSE)
+
+# print ANOVA table
+#anova(finalglm)
+
+# print deviance table
+GetDevianceTable(finalglm) %>% 
+  pandoc.table(., 
+               style        = "simple",
+               split.tables = 100, 
+               split.cells  = c(rep(7,10)),
+               justify      = "right",
+               missing      =".",
+               big.mark     = ',', 
+               round        = c(0,1,0,0,20,1))
+
+```
+*`r tab_nums("devtable")`*
+
+
+<!-- final model ------------------------------------------------------ -->
+
+##### page break
+
+**Final model**
+
+
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "finalmodeleffects", 
+  caption = "greater silversmelt Final GLM model estimates for selected effects",
+  display = FALSE)
+
+
+final     <- as.formula(cpue ~ year + week + depth_cat) 
+
+newdat <- expand.grid(
+  year     = 2005:2019,
+  week     = 15:34,
+  depth_cat= levels(cpue_model$depth_cat)) 
+
+ 
+finalMod <- gam(final, data=cpue_model,
+                family=negbin(glm.nb(finalglm,
+                                     data=cpue_model, 
+                                     link=log,
+                                     na.action=na.exclude)
+                              $theta))
+
+
+# plot the estimates of the different effects
+plot.gam(finalMod, all.terms=T, page=1)
+plot.gamViz(finalMod, select=1)
+
+# print(plot.gamViz(finalMod, allTerms = TRUE), pages=1)
+# t <- plot.gamViz(finalMod, allTerms = TRUE)
+# t1 <- plot.gamViz(finalMod, allTerms = TRUE)$plots[1]
+# t2 <- plot.gamViz(finalMod, allTerms = TRUE)$plots[2]
+# t3 <- plot.gamViz(finalMod, allTerms = TRUE)$plots[3]
+# t4 <- plot.gamViz(finalMod, allTerms = TRUE)$plots[4]
+# t5 <- plot.gamViz(finalMod, allTerms = TRUE)$plots[5]
+
+
+
+```
+
+*`r fig_nums("finalmodeleffects")`*
+
+
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "cpueindexplot", 
+  caption = "Observed (blue) and GLM standardized (red) commercial cpue for greater silversmelt in tonnes per day",
+  display = FALSE)
+
+
+# get the prediction
+pred <- predict(finalMod,newdata=newdat,se.fit=TRUE,type = "link")
+
+
+# CI function
+make_ci <- function(pred, data){
+  
+  # fit, lower, and upper CI
+  fit <- pred$fit
+  lwr <- exp(pred$fit - (1.96 * pred$se.fit))
+  upr <- exp(pred$fit + (1.96 * pred$se.fit))
+  
+  return(data.frame(fit, lwr, upr, data))
+  }
+
+my_pred <- make_ci(pred, newdat)
+
+df <-
+  my_pred %>% 
+  mutate(cpue = exp(pred$fit),
+         type = "standardized") %>% 
+  filter(depth_cat == "[300,400)",
+         week == "29") %>%   
+  dplyr::select(-fit)
+
+# create observed
+obs <-
+  nhauls %>% 
+  group_by(year,week, depth_cat) %>%
+  summarize(catch  = sum(catch, na.rm=TRUE),
+            effort = sum(effort, na.rm=TRUE)) %>%
+  mutate(cpue=catch/effort,
+         type = "observed") %>% 
+  group_by(year, type) %>% 
+  summarize(cpue = mean(cpue, na.rm=TRUE)) %>% 
+  ungroup()  
+
+df_obs <-
+  bind_rows(df,obs) %>% 
+  data.frame()
+
+ggplot(df_obs, aes(x=year, y=cpue)) +
+  theme_publication() +
+  geom_ribbon(aes(ymin=lwr, ymax=upr, fill=type), alpha=0.2) +
+  geom_line(aes(y=cpue, colour=type), size=1) +
+  geom_point(aes(y=cpue, colour=type), size=2) +
+  expand_limits(y=0) +
+  labs(y="cpue (tonnes/day") 
+#+
+#  facet_wrap(~type)
+
+
+```
+
+*`r fig_nums("cpueindexplot")`*
+
+
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+tab_nums(
+  name    = "catchindextable", 
+  caption = "GLM standardized commercial CPUE (tonnes/day) for greater silversmelt, with lower and upper values based on the standard error.",
+  display = FALSE)
+
+df_obs %>% 
+  filter(type == "standardized",
+         depth_cat == "[300,400)",
+         week == "29") %>% 
+  mutate(
+    cpue = round(cpue,2),
+    upr  = round(upr,2),
+    lwr  = round(lwr,2)) %>% 
+  dplyr::select(year, cpue, lwr, upr) %>% 
+  
+  mutate(year = as.character(year)) %>% 
+
+  pandoc.table(., 
+               style        = "simple",
+               split.tables = 100, 
+               split.cells  = c(rep(7,10)),
+               justify      = "right",
+               missing      =".",
+               big.mark     = ',', 
+               round        = c(0,2,2,2,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0))
+
+
+
+# save to csv
+df_obs %>% 
+  filter(type=="standardized") %>% 
+  write.csv(file=paste0("Standardized commercial cpue 2005-2019.csv"), row.names = FALSE)
+
+```
+
+*`r tab_nums("catchindextable")`*
+
+
+<!-- single fleet analysis ------------------------------------------------------ -->
+
+##### page break
+
+**Single fleet analyses**
+
+The single-fleet analysis shows that the signal of standardized CPUE is very different if data of the Faroese fleet is left out. If the PFA fleet is left out, the pattern and the variance is quite comparable to the standardized CPUE for all fleets together. 
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "singlefleet", 
+  caption = "GLM standardized commercial catch for greater silversmelt if only the Faroese data are included (left) and if only the PFA data are included (right).",
+  display = FALSE)
+
+
+cpue_model_onlypfa  <- filter(cpue_model, 
+                              fleet == "pfa")
+cpue_model_onlyfar  <- filter(cpue_model, fleet == "faroer" )
+
+finalMod_onlypfa  <- glm.nb(final, data=cpue_model_onlypfa, 
+                   link=log, 
+                   na.action=na.exclude)
+
+finalMod_onlyfar  <- glm.nb(final, data=cpue_model_onlyfar, 
+                   link=log, 
+                   na.action=na.exclude)
+
+
+newdat_onlypfa <- expand.grid(
+  year        = as.factor(unique(cpue_model_onlypfa$year)),
+  week        = "29",
+  depth_cat   = "[300,400)")
+  
+#  week        = as.factor(unique(cpue_model_onlypfa$week)),
+#  depth_cat   = levels(cpue_model_onlypfa$depth_cat)) 
+
+newdat_onlyfar <- expand.grid(
+  year        = as.factor(unique(cpue_model_onlyfar$year)),
+  week        = "29",
+  depth_cat   = "[300,400)")
+#  week        = as.factor(unique(cpue_model_onlyfar$week)),
+#  depth_cat   = levels(cpue_model_onlyfar$depth_cat)) 
+
+
+# calculate the predicted values and confidence intervals
+pred_onlypfa      <- predict(finalMod_onlypfa ,newdat_onlypfa,se.fit=T,type="link")
+pred_onlyfar      <- predict(finalMod_onlyfar ,newdat_onlyfar,se.fit=T,type="link")
+
+
+# create df
+df    <- data.frame(
+               cpue = exp(pred_onlypfa$fit),
+               upr  = exp(pred_onlypfa$fit + (1.96 * pred_onlypfa$se.fit)), 
+               lwr  = exp(pred_onlypfa$fit - (1.96 * pred_onlypfa$se.fit)),
+               year = unique(cpue_model_onlypfa$year),
+               type = "onlypfa",
+               stringsAsFactors = FALSE
+               ) %>% 
+  bind_rows(., data.frame(
+               cpue = exp(pred_onlyfar$fit),
+               upr  = exp(pred_onlyfar$fit + (1.96 * pred_onlyfar$se.fit)), 
+               lwr  = exp(pred_onlyfar$fit - (1.96 * pred_onlyfar$se.fit)),
+               year = unique(cpue_model_onlyfar$year),
+               type = "onlyfar",
+               stringsAsFactors = FALSE
+               ) ) %>% 
+
+  mutate(year = as.numeric(as.character(year)))
+
+
+ggplot(df, aes(year)) +
+  theme_publication() +
+  theme(legend.position  = "none") +
+  geom_ribbon(aes(ymin=lwr, ymax=upr, fill=type), alpha=0.2) +
+  geom_line(aes(y=cpue, colour=type), size=1) +
+  geom_point(aes(y=cpue, colour=type), size=1.5) +
+  expand_limits(y=0) +
+  labs(y="cpue (tonnes per day)") +
+  facet_wrap(~type, ncol=2)
+
+
+
+```
+
+*`r fig_nums("singlefleet")`*
+
+
+
+<!--4. Discussion and conclusions ------------------------------------------------------ -->
+
+# Discussion and conclusions
+
+The final model for standardizing the CPUE of these fleets models the catch by day and takes into account of the week and depth. The new standardized CPUE series starts in 2005.
+
+A ‘single fleet analysis’ was carried out by removing the data of one of the contracting parties from the analysis to explore the sensitivity of the results to the data being used. The conclusion from that analysis is that the trends are similar when only the Faroese data are analysed and that the time series of the PFA fleet alone is too short for an indexed CPUE series.
+    
+
+
+<!--5. Acknowledgements ------------------------------------------------------ -->
+
+# Acknowledgements
+
+We would like to acknowledge the permission granted by the Faroese fleet for using their data. And we would like to acknowledge the crews onboard PFA vessels that participate in the self sampling program.  
