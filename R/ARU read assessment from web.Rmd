@@ -1,0 +1,171 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.5.dotx
+---
+
+```{r setup, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+# =======================================================================================
+# Read sam from web
+# 
+# 21/04/2020 First coding; adapted from WGWIDE code
+# =======================================================================================
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
+knitr::opts_chunk$set(fig.width=10) 
+
+rm(list=ls())
+
+# library(devtools)
+library(tidyverse)    # tidying packages
+library(readxl)       # read excel
+library(scales)
+library(RColorBrewer)
+library(viridis)
+library(pander)
+library(stockassessment)
+
+# devtools::install_github("einarhjorleifsson/readsam")
+library(readsam)
+
+# lowcase function
+lowcase <- function(df) {
+  names(df) <- tolower(names(df)) %>% gsub("\\?|\\s+|\\.+|_+|\\(|\\)","",.) 
+  df
+}
+
+# theme publication 
+source("theme_publication.r")
+source("sam_process_error.r")
+
+# Download fit from web to local computer
+getfitfromweb <- function(nam){
+  dir.create(file.path(nam))
+  download.file(file.path(url,nam, "run","model.RData"), file.path(nam, "model.RData"))
+  }
+# getfitfromweb(nam="WGDEEP_2020")
+
+
+getparsfromfit <- function(fit) {
+  # a  <- gsub("fit_", "", fit) 
+  df <- 
+    data.frame(stockassessment::partable(fit)) %>% 
+    add_rownames() %>%  
+    separate(rowname, into=c("parameter", "parnumber"), sep="_")
+  return(df)
+}
+
+# settings
+web         <- TRUE
+user        <- "user233"
+assessments <- c("WGDEEP_2020", "ARU.27.5b6a_WGDEEP_2020_","ARU.27.5b6a_WGDEEP_2020_mp")
+
+# download fit files
+for (a in assessments) {
+  print(a)
+  assign(paste0("fit_", a), readsam::get_fit(a, web=web, user=user))  
+}
+
+# read input, results and parameter data
+ibya <- rbya <- rby <- pars <- pe_rby <- pe_rbya <- data.frame()
+for (a in assessments) {
+  print(a)
+  assign(paste0("ibya_",a), mutate(readsam::read_ibya(a, web = web, user = user), file=a))  
+  assign(paste0("rbya_",a), mutate(readsam::read_rbya_sam(get(paste0("fit_", a)), get(paste0("ibya_",a))), file=a) )  
+  assign(paste0("rby_",a) , mutate(readsam::read_rby_sam(get(paste0("fit_", a)), get(paste0("ibya_",a))), file=a) )
+  assign(paste0("pars_",a), mutate(getparsfromfit(get(paste0("fit_", a))), file=a)) 
+  t <- sam_process_error(get(paste0("rbya_",a)),plus_group = TRUE, plot_it=FALSE)
+  assign(paste0("pe_rbya_",a), mutate(t[[1]], file=a)) 
+  assign(paste0("pe_rby_",a), mutate(t[[2]], file=a)) 
+  
+  ibya <- bind_rows(ibya, get(paste0("ibya_",a)))
+  rbya <- bind_rows(rbya, get(paste0("rbya_",a)))
+  rby  <- bind_rows(rby, get(paste0("rby_",a)))
+  pars <- bind_rows(pars, get(paste0("pars_",a)))
+  pe_rbya <- bind_rows(pe_rbya, get(paste0("pe_rbya_",a)))
+  pe_rby  <- bind_rows(pe_rby, get(paste0("pe_rby_",a)))
+}
+
+
+
+pars <- 
+  pars %>% 
+  mutate(parnumber = factor(parnumber, levels=unique(.$parnumber))) %>% 
+  lowcase()
+
+tst <- sam_process_error(rbya_WGDEEP_2020,plus_group = TRUE, plot_it=FALSE)
+
+View(tst[[1]])
+View(tst[[2]])
+
+
+
+```
+
+**Overview of SAM assessments**
+
+**`r paste(assessments, collapse="; ")`**
+
+Martin Pastoors, `r format(Sys.time(), '%d/%m/%Y')`
+
+##### page break
+
+**Summary of the Assessments**
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+# plot of trend by variable
+rby %>% 
+  # filter(stock %in% c("ARU.27.5b6a_WGDEEP_2020_","ARU.27.5b6a_WGDEEP_2020_mp")) %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec"))) %>% 
+  
+  ggplot(aes(x=year,y=Estimate, group=file)) +
+  theme_publication() +
+  geom_line(aes(colour=file)) +
+  geom_ribbon(aes(ymin=Low, ymax=High, fill=file), alpha=0.3) +
+  expand_limits(y=0) +
+  facet_wrap(~variable, scales="free_y", ncol=1)
+
+```
+
+##### page break
+
+**Parameter estimates**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+pars %>% 
+  # filter(file %in% c("ARU.27.5b6a_WGDEEP_2020_","ARU.27.5b6a_WGDEEP_2020_mp")) %>% 
+  filter(tolower(parameter) %in% c("logfpar", "logsdlogfsta","logsdlogn", "logsdlogobs")) %>% 
+
+  ggplot(aes(x=parnumber, y=exppar, group=file)) +
+  theme_publication() +
+  geom_bar(aes(fill=file), stat="identity", position="dodge") +
+  geom_errorbar(aes(ymin=low, ymax=high, colour=file, group=file), position=position_dodge()) +
+  geom_point(aes(colour=file), position=position_dodge(0.9)) +
+  scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
+  facet_wrap(~parameter, scales="free_y")
+
+
+```
+
+##### page break
+
+**Process error**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+pe_rby %>% 
+  filter(tolower(var)=="pe") %>% 
+  
+  ggplot2::ggplot(ggplot2::aes(x=year,y=b,fill=var)) +
+  ggplot2::theme_bw() +
+  ggplot2::geom_bar(stat="identity", position = "dodge") +
+  ggplot2::labs(x="",y="Mass",title="Process error expressed as deviation in mass") +
+  ggplot2::facet_wrap(~file) 
+  
+
+```
