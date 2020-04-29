@@ -88,18 +88,10 @@ for (a in assessments) {
   pe_rby  <- bind_rows(pe_rby, get(paste0("pe_rby_",a)))
 }
 
-
-
 pars <- 
   pars %>% 
   mutate(parnumber = factor(parnumber, levels=unique(.$parnumber))) %>% 
   lowcase()
-
-tst <- sam_process_error(rbya_WGDEEP_2020,plus_group = TRUE, plot_it=FALSE)
-
-View(tst[[1]])
-View(tst[[2]])
-
 
 
 ```
