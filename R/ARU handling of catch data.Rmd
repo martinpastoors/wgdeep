@@ -1,0 +1,475 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.5.dotx
+---
+
+```{r setup, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+# =======================================================================================
+# ARU assessment data and diagnostics
+# 
+# 21/04/2020 First coding; adapted from WGWIDE code
+# 25/04/2021 Fully adapted to inclusion of plots for WGDEEP report
+# =======================================================================================
+
+# devtools::install_github("fishfollower/SAM/stockassessment")
+
+# try(if(packageVersion("stockassessment")=="0.5.4") stop("wrong version of Stockassessment package"))
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
+knitr::opts_chunk$set(fig.width=10) 
+
+rm(list=ls())
+
+# library(devtools)
+library(tidyverse)    # tidying packages
+library(readxl)       # read excel
+library(scales)
+library(RColorBrewer)
+library(viridis)
+library(pander)
+library(stockassessment)
+library(ggrepel)
+
+# devtools::install_github("einarhjorleifsson/readsam")
+library(readsam)
+
+# lowcase function
+source("lowcase.r")
+source("theme_publication.r")
+source("sam_process_error.r")
+
+datapath <- "C:/DATA/Onedrive - PFA/Documents/iWGDEEP/2021/06. Data/aru.27.5b6a"
+
+# Function to download fit from web to local computer
+getfitfromweb <- function(nam){
+  dir.create(file.path(nam))
+  download.file(file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs/user233",
+                          nam, "run","model.RData"), file.path(nam, "model.RData"))
+  load(file.path(nam, "model.RData"))
+  return(fit)
+  }
+# getfitfromweb(nam="WGDEEP_2020")
+
+
+getparsfromfit <- function(fit) {
+  # a  <- gsub("fit_", "", fit) 
+  df <- 
+    data.frame(stockassessment::partable(fit)) %>% 
+    add_rownames() %>%  
+    separate(rowname, into=c("parameter", "parnumber"), sep="_")
+  return(df)
+}
+
+nam         <- "ARU.27.5b6a_WGDEEP_2021"
+assessments <- c("ARU.27.5b6a_WGDEEP_2020_", "ARU.27.5b6a_WGDEEP_2021", "Aru.27.5b6a_wgdeep2021_trial_deepsurv")
+user        <- "user233"
+web         <- TRUE
+
+rp          <- data.frame(var      = c("fbar","ssb","ssb"),
+                          refpoint = c("fmsy","blim","msybtrigger"),
+                          value    = c(0.2, 59730, 82999))
+
+# read input, results and parameter data
+ibya <- rbya <- rby <- pars <- pe_rby <- pe_rbya <- data.frame()
+for (a in assessments) {
+  # print(a)
+  assign(paste0("fit_", a), getfitfromweb(a))  
+  assign(paste0("ibya_",a), mutate(readsam::read_ibya(a, web = web, user = user), file=a))  
+  assign(paste0("rbya_",a), mutate(readsam::read_rbya_sam(get(paste0("fit_", a)), get(paste0("ibya_",a))), file=a) )  
+  assign(paste0("rby_",a) , mutate(readsam::read_rby_sam(get(paste0("fit_", a)), get(paste0("ibya_",a))), file=a) )
+  assign(paste0("pars_",a), mutate(getparsfromfit(get(paste0("fit_", a))), file=a)) 
+  t <- sam_process_error(get(paste0("rbya_",a)),plus_group = TRUE, plot_it=FALSE)
+  assign(paste0("pe_rbya_",a), mutate(t[[1]], file=a)) 
+  assign(paste0("pe_rby_",a), mutate(t[[2]], file=a)) 
+  
+  ibya <- bind_rows(ibya, get(paste0("ibya_",a)))
+  rbya <- bind_rows(rbya, get(paste0("rbya_",a)))
+  rby  <- bind_rows(rby, get(paste0("rby_",a)))
+  pars <- bind_rows(pars, get(paste0("pars_",a)))
+  pe_rbya <- bind_rows(pe_rbya, get(paste0("pe_rbya_",a)))
+  pe_rby  <- bind_rows(pe_rby, get(paste0("pe_rby_",a)))
+}
+
+# identical(fit_ARU.27.5b6a_WGDEEP_2020_, fit_ARU.27.5b6a_WGDEEP_2021)
+
+
+
+
+
+# Parameters
+pars <- 
+  pars %>% 
+  mutate(parnumber = factor(parnumber, levels=unique(.$parnumber))) %>% 
+  lowcase()
+
+# url        <- paste("https://www.stockassessment.org/datadisk/stockassessment/userdirs",user,"/",nam,"/data/", sep="")  
+# filestoget <- c("survey.dat")
+# d          <- lapply(filestoget, function(f)download.file(paste(url,f,sep=""), f))
+
+fleetnames <-
+  bind_rows(
+    data.frame(fleetname="catch", stringsAsFactors = FALSE),
+    as.data.frame(names(FLCore::readFLIndices("survey.dat"))) %>% setNames("fleetname"),
+    
+  ) %>% 
+  mutate(fleet = as.character(row_number())) %>% 
+  mutate(fleetname  = gsub(" ","", fleetname)) %>% 
+  mutate(fleetname2 = substr(fleetname, 1, 12))
+
+fit  <- fit_ARU.27.5b6a_WGDEEP_2021
+conf <- fit$conf
+sd   <- fit$pl
+data <- fit$data
+
+ages   <- conf$minAge:conf$maxAge
+fleets <- 1:nrow(conf$keyLogFsta)
+years  <- data$years
+nr     <- nrow(conf$keyLogFsta)
+nc     <- ncol(conf$keyLogFsta)
+
+t1 <- 
+  as.data.frame(conf$keyLogFpar) %>% 
+  rownames_to_column(var="fleet") %>% 
+  pivot_longer(names_to="test", values_to="parnumber", cols=1:nc+1) %>% 
+  bind_cols(age=rep(ages, nr)) %>% 
+  filter(parnumber != -1) %>% 
+  group_by(parnumber, fleet) %>% 
+  summarise(ages = paste(age, collapse="_")) %>% 
+  ungroup() %>% 
+  distinct(parnumber, fleet, ages) %>% 
+  mutate(partype = "LogFpar") %>% 
+  left_join(fleetnames, by="fleet") %>% 
+  mutate(parname = paste(fleetname2, ages))
+
+t2 <- 
+  as.data.frame(conf$keyVarObs) %>% 
+  rownames_to_column(var="fleet") %>% 
+  pivot_longer(names_to="test", values_to="parnumber", cols=1:nc+1) %>% 
+  bind_cols(age=rep(ages, nr)) %>% 
+  filter(parnumber != -1) %>% 
+  group_by(parnumber, fleet) %>% 
+  summarise(ages = paste(age, collapse="_")) %>% 
+  ungroup() %>% 
+  distinct(parnumber, fleet, ages) %>% 
+  mutate(partype = "sdLogObs") %>% 
+  left_join(fleetnames, by="fleet") %>% 
+  mutate(parname = paste(fleetname2, ages))
+
+t3 <- 
+  as.data.frame(conf$keyVarObs) %>% 
+  rownames_to_column(var="fleet") %>% 
+  pivot_longer(names_to="test", values_to="parnumber", cols=1:nc+1) 
+
+# "sdrep" parameter estimates TMB report
+# "pl"    parameter list
+# "plsd"  sd parameter estimates
+# "data"  data
+# "conf"  configuration
+# "opt"   optimization
+# "obj"   likelihood object
+# "rep"   additional report
+# "low"   limit for parameters
+# "hig"   limit for parameters
+
+# Generating a data frame with names in the fit list
+l1 <- l2 <- l3 <- data.frame(stringsAsFactors = FALSE)
+count <- 0
+l1 <- as.data.frame(names(fit)) 
+for (i in 1:nrow(l1)) {
+  l2 <- bind_rows(l2, data.frame(level2 = names(fit[[i]]), level1 = l1[i,1]))
+  for (j in 1:length(fit[[i]])) {
+    count <- count + 1
+    # print(paste(i,j,count,sep=" / "))
+    if(!is.null(names(fit[[i]][[j]]))) {
+      # print(unique(names(fit[[i]][[j]])))
+      l3 <- bind_rows(l3, data.frame(level3 = unique(names(fit[[i]][[j]])), level2 = l2[count,1], level1 = l1[i,1]))
+    } else {
+      # print(unique(names(fit[[i]][[j]])))
+      l3 <- bind_rows(l3, data.frame(level2 = l2[count,1], level1 = l1[i,1]))
+    }
+  }
+}
+
+l3 <- l3 %>% dplyr::select(level1, level2, level3)
+
+
+
+```
+
+**Handling of catch data for Greater argentine in 5b and 6a**
+
+Martin Pastoors, `r format(Sys.time(), '%d/%m/%Y')`
+
+Comparing catch in tonnes (from InterCatch, all ages included) with the estimated/calculated catch in tonnes from SAM assessment. 
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+# observed catch in tonnes
+ct <- 
+  read.table("ct.dat", skip=5) %>% 
+  as.data.frame() %>%
+  setNames("estimate") %>% 
+  mutate(
+    estimate   = as.numeric(estimate),
+    source="intercatch",
+    var   = "catch", 
+  ) %>% 
+  bind_cols(year=fit$data$years) %>% 
+  mutate(year  = as.numeric(year))
+
+# assessment
+ass <-
+  rby %>% 
+    filter(file %in% c("ARU.27.5b6a_WGDEEP_2021")) %>% 
+    filter(variable %in% c("ssb","fbar","catch")) %>%
+    # filter(variable %in% c("catch")) %>% 
+    lowcase() %>% 
+    rename(var=variable) %>%
+    mutate(source="assessment") %>%
+    mutate(year = ifelse(var=="catch", year+1994,year)) 
+
+# plot comparing obs vs pred  
+ass %>% 
+  filter(var=="catch") %>% 
+  ggplot(aes(x=year,y=estimate)) +
+  theme_publication() +
+  theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
+  theme(legend.position="none") +
+  # assessment
+  geom_line(aes(colour=source)) +
+  geom_ribbon(aes(ymin=low, ymax=high, fill=source), alpha=0.3) +
+  
+  # observations
+  geom_point(data=ct, aes(x=year,y=estimate), inherit.aes = FALSE) +
+
+  expand_limits(y=0) +
+  labs(x="", y="", title="catch (obs vs predicted") 
+
+
+# plot showing the relative difference between obs vs predicted
+ass %>% 
+  bind_rows(ct) %>% 
+  filter(var=="catch") %>% 
+  dplyr::select(estimate, year, var, source) %>% 
+  pivot_wider(names_from = source, values_from=estimate) %>% 
+  mutate(rel_diff = 100*(assessment/intercatch - 1)) %>% 
+  
+  ggplot(aes(x=year,y=rel_diff)) +
+  theme_publication() +
+  theme(legend.position="none") +
+  geom_bar(aes(fill=var), stat="identity", size=1) +
+  labs(x="") 
+
+
+
+```
+
+##### page break
+
+InterCatch catch in tonnes comparison: differentiating between catch at age 5 and higher and catch at age 4 and lower. In 2020, 10% of the caton was in the ages 4 and below. That means that the caton used in the SAM model was actually 15475 instead of 17149 t.
+
+```{r, echo=FALSE, fig.asp=0.4, fig.align="center", message=FALSE, warning=FALSE}
+
+# InterCatch
+
+ic_cn <-
+  readxl::read_xlsx(file.path(datapath, "20210426 InterCatch all data.xlsx"),
+                    sheet="Canum",
+                    skip=61,
+                    col_names=TRUE) %>% 
+  pivot_longer(names_to="age", values_to="canum", 2:ncol(.))
+
+ic_cw <-
+  readxl::read_xlsx(file.path(datapath, "20210426 InterCatch all data.xlsx"),
+                    sheet="Weca",
+                    skip=61,
+                    col_names=TRUE) %>% 
+  pivot_longer(names_to="age", values_to="weca", 2:ncol(.))
+
+ic <-
+  ic_cn %>% 
+  left_join(ic_cw, by=c("year","age")) %>% 
+  mutate(sop = canum * weca) %>% 
+  mutate(age = as.integer(age)) %>% 
+  mutate(inassessment = ifelse(age >= 5, TRUE, FALSE)) %>% 
+  group_by(year, inassessment) %>% 
+  summarise(sop = sum(sop, na.rm=TRUE))
+
+
+ic %>% 
+  ggplot(aes(x=year,y=sop)) +
+  theme_publication() +
+  geom_bar(aes(fill=inassessment), stat="identity", size=1) +
+  labs(x="") 
+
+ic %>% 
+  ggplot(aes(x=year,y=sop)) +
+  theme_publication() +
+  geom_bar(aes(fill=inassessment), stat="identity", position="fill", size=1) +
+  labs(x="") 
+
+ic %>% 
+  group_by(year) %>% 
+  mutate(prop = 100* sop / sum(sop, na.rm=TRUE)) %>% 
+  filter(inassessment == FALSE) %>% 
+  
+  ggplot(aes(x=year,y=prop)) +
+  theme_publication() +
+  geom_bar(stat="identity", size=1) +
+  labs(x="", y="prop (%)", title = "Proportion caton not in assessment (age <= 4") 
+
+ic %>% 
+  group_by(year) %>%
+  mutate(sop = as.integer(sop)) %>% 
+  pivot_wider(names_from=inassessment, values_from=sop) %>% 
+  setNames(c("year","age2_4","age5_21")) %>% 
+  mutate(total = age2_4 + age5_21) %>% 
+  mutate(prop = scales::percent( age2_4 / total)) %>% 
+  pander::pandoc.table(style="simple", justify="right" )
+
+
+
+
+
+```
+##### page break
+
+Comparison of summed logged observed catch numbers in InterCatch (age 2-21) and in SAM (age 5-21), and calculation of percentage difference (in SAM compared to InterCatch)
+
+```{r, echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+# InterCatch
+# Catch in numbers comparison
+
+fleets <- unique(fit$data$aux[, "fleet"])
+idx <- fit$data$aux[, "fleet"] %in% fleets
+
+
+# log catch number at age
+t <- 
+  data.frame(
+    age   = fit$data$aux[idx, "age"],
+    fleet = as.character(fit$data$aux[idx, "fleet"]),
+    year  = fit$data$aux[idx, "year"],
+    obs   = fit$data$logobs[idx],
+    pred  = fit$rep$predObs[idx]
+  ) %>% 
+  filter(fleet==1) %>% 
+  mutate(res   = obs-pred) %>% 
+  mutate(source="sam") %>% 
+  
+  bind_rows(
+    ic_cn %>% 
+      mutate(obs=log(canum)) %>% 
+      mutate(source="ic") %>% 
+      mutate(age=as.numeric(age))
+  ) 
+
+# plot obs in SAM and obs in IC
+t %>%
+  ggplot(aes(x=year, y=obs)) +
+  theme_publication() +
+  geom_point(aes(colour=source)) +
+  geom_line(aes(colour=source)) +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+  facet_wrap(~age, scales="free_y")
+
+
+# plot obs in SAM and obs in IC, summed over ages
+t %>%
+  group_by(year, source) %>% 
+  summarise(obs=sum(obs,na.rm=TRUE)) %>% 
+
+  ggplot(aes(x=year, y=obs)) +
+  theme_publication() +
+  geom_point(aes(colour=source)) +
+  geom_line(aes(colour=source)) +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) 
+
+
+t %>% 
+  group_by(year, source) %>% 
+  summarise(obs=sum(obs,na.rm=TRUE)) %>% 
+  pivot_wider(names_from=source, values_from=obs) %>% 
+  mutate(perc_diff = scales::percent(sam/ic-1)) %>% 
+  pander::pandoc.table(style="simple", justify="right" )
+
+```
+
+##### page break
+
+Catch in number comparison between predicted and observed (i.e. age 5 onwards) in SAM
+
+```{r, echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+# Catch in numbers comparison
+
+fleets <- unique(fit$data$aux[, "fleet"])
+idx <- fit$data$aux[, "fleet"] %in% fleets
+
+
+# log catch number at age
+t <- 
+  data.frame(
+    age   = fit$data$aux[idx, "age"],
+    fleet = as.character(fit$data$aux[idx, "fleet"]),
+    year  = fit$data$aux[idx, "year"],
+    obs   = fit$data$logobs[idx],
+    pred  = fit$rep$predObs[idx]
+  ) %>% 
+  filter(fleet==1) %>% 
+  mutate(res   = obs-pred) 
+
+# plot obs and pred
+t %>%
+  ggplot(aes(x=year, y=obs)) +
+  theme_publication() +
+  geom_point() +
+  geom_line(aes(y=pred)) +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+  facet_wrap(~age, scales="free_y")
+
+# plot residuals by age
+t %>%
+  ggplot(aes(x=year, y=res)) +
+  theme_publication() +
+  geom_hline(yintercept=0) +
+  geom_segment(aes(x=year, xend=year, yend=res, y=0)) +
+  geom_point(fill="white", shape=21) +
+  scale_y_continuous(limits = c(-max(abs(t$res), na.rm=TRUE), max(abs(t$res), na.rm=TRUE))) +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+  facet_wrap(~age)
+
+
+# plot residuals
+t %>%
+  group_by(year) %>% 
+  summarise(
+    obs = sum(obs, na.rm=TRUE),
+    pred = sum(pred, na.rm=TRUE)
+  ) %>% 
+  mutate(res   = obs-pred) %>%
+  mutate(resprop = res / obs) %>% 
+  # View()
+
+  ggplot(aes(x=year, y=res)) +
+  theme_publication() +
+  # geom_hline(yintercept=0) +
+  geom_segment(aes(x=year, xend=year, yend=res, y=0)) +
+  geom_point(fill="white", shape=21) +
+  # scale_y_continuous(limits = c(-max(abs(t$res), na.rm=TRUE), max(abs(t$res), na.rm=TRUE))) +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) 
+
+
+```
+
+
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+
+
+```
