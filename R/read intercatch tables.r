@@ -4,6 +4,7 @@
 # Generating overviews of intercatch information
 #
 # 20/04/2020 Initial coding
+# 13/04/2021 for WGDEEP 2021
 ################################################################################
 
 rm(list=ls());
@@ -24,7 +25,7 @@ source("r/theme_publication.r")
 options(max.print=999999)
 
 # datapath  <- "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/WGDEEP/2019 Meeting docs/08. Personal folders/LiseHelenOfstad/InterCatch"
-datapath <- "D:/iWGDEEP/2020/06. Data/aru.27.5b6a/InterCatch/aru.27.5b6a_all_ 2020-4-20 12_10_35"
+datapath <- "C:/DATA/Onedrive - PFA/Documents/iWGDEEP/2021/06. Data/aru.27.5b6a/InterCatch/aru.27.5b6a_all_ 2021-4-24 2020 data"
 
 # ---------------------------------------------------------------------------------
 # Load tables
@@ -120,3 +121,18 @@ t2 %>%
   facet_wrap(~area)
   
 
+t2 %>% 
+  mutate(area = substr(area, 1, 6)) %>% 
+  group_by(ageorlength) %>% 
+  mutate(sop = canum * weca) %>% 
+  summarize_at(c("canum", "sop","noagereadings"), sum, na.rm = TRUE) %>% 
+  ungroup() %>% 
+  mutate(prop = sop / sum(sop, na.rm=TRUE))
+
+  mutate(canum = round(canum, digits=0)) %>% 
+  gather(key="variable", value="data", canum) %>%
+  dcast(area + sampledorestimated + ageorlength  ~ country , 
+        value.var="data", sum, margins=c("area", "sampledorestimated")) %>% 
+  
+  group_by(area) %>%
+  do(add_row(., .after=0)) 
