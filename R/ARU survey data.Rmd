@@ -1,0 +1,114 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.5.dotx
+---
+
+```{r setup, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+# =======================================================================================
+# ARU survey data.Rmd
+# 
+# Generate overviews of survey data
+#
+# 13/11/2019 First coding
+# =======================================================================================
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
+knitr::opts_chunk$set(fig.width=10) 
+
+rm(list=ls())
+
+# library(devtools)
+library(tidyverse)    # tidying packages
+library(readxl)       # read excel
+library(scales)
+library(RColorBrewer)
+library(viridis)
+library(pander)
+
+# lowcase function
+lowcase <- function(df) {
+  names(df) <- tolower(names(df)) %>% gsub("\\?|\\s+|\\.+|_+|\\(|\\)\\/","",.) 
+  df
+}
+
+source("theme_publication.r")
+
+# Data path
+data.path  <- "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/WGDEEP/2021 Meeting Docs/06. Data"
+
+
+# list the available excel files
+files.list <- c("aru.27.6b7-1012/survey/aru_SP IBTS GFS Porcupine2020.xlsx",
+                "aru.27.5b6a/CPUE/Standardized commercial cpue 2005-2020.xlsx",
+                "aru.27.5b6a/Survey/Scottish Deepwater Survey Greater Argentine Data.xlsx")
+
+# read the files
+survey <- data.frame(stringsAsFactors = FALSE)
+
+for (fn in files.list) {
+  
+  # print(fn)
+  survey <- 
+    bind_rows(
+      survey,
+      read_excel(file.path(data.path, fn), sheet="standardformat", col_names=TRUE) %>% 
+      lowcase() %>% mutate(year  = as.integer(year)) %>% 
+      mutate(metric = gsub("/|-|_","",metric))
+    )
+}
+
+
+```
+
+**Greater Silver smelt (ARU) index data**
+
+Martin Pastoors, `r format(Sys.time(), '%d/%m/%Y')`
+
+
+
+```{r, echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+survey %>% 
+  filter(metric %in% c("kghour","tonday", "Standardised biomass")) %>% 
+  group_by(survey, year) %>% 
+
+  ggplot(aes(x=year, y=estimate)) +
+  theme_publication() +
+  geom_point(aes(colour=species)) +
+  geom_line(aes(colour=species)) +
+  geom_errorbar(aes(ymin=lbnd,ymax=ubnd, colour=species)) +
+  expand_limits(y=0) +
+  labs(x="",y="") +
+  facet_wrap(~survey, scales="free_y")
+
+
+
+
+```
+
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+d <-
+  survey %>% 
+  ungroup() %>% 
+  filter(metric %in% c("kghour","tonday", "Standardised biomass")) %>% 
+  filter(species == "ARU") %>% 
+  dplyr::select(-c(metric, ubnd, lbnd)) %>% 
+  tidyr::pivot_wider(names_from = survey, values_from = estimate) %>% 
+  dplyr::select(-c(year, species)) %>% 
+  corrr::correlate(use = "pairwise.complete.obs")
+
+print(d)
+
+d %>% 
+  corrr::shave(upper = FALSE) %>%
+  corrr::rplot()     # Plot
+
+
+```
+
+
