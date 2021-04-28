@@ -1,0 +1,119 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.5.dotx
+---
+
+```{r setup, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+# =======================================================================================
+# LIN 5b forecast
+#
+# 26/04/2021 Fully adapted to inclusion of plots for WGDEEP report
+# =======================================================================================
+
+# devtools::install_github("fishfollower/SAM/stockassessment")
+
+# try(if(packageVersion("stockassessment")=="0.5.4") stop("wrong version of Stockassessment package"))
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
+knitr::opts_chunk$set(fig.width=10) 
+
+rm(list=ls())
+
+# library(devtools)
+library(tidyverse)    # tidying packages
+library(readxl)       # read excel
+library(scales)
+library(RColorBrewer)
+library(viridis)
+library(pander)
+library(stockassessment)
+library(ggrepel)
+
+# devtools::install_github("einarhjorleifsson/readsam")
+library(readsam)
+
+# lowcase function
+source("lowcase.r")
+source("theme_publication.r")
+
+load("LIN.27.5b/forecast.RData")
+
+# attributes(FC[[length(FC)]])$tab
+# attributes(FC[[length(FC)]])$label
+
+fc <- data.frame(stringsAsFactors = FALSE)
+# i <- 1
+for (i in 1:length(FC)) {
+  
+  ft <- attributes(FC[[i]])$tab[4,1]
+  fc <-
+    bind_rows(
+      fc,
+      as.data.frame(attributes(FC[[i]])$tab) %>% 
+      rownames_to_column(var="year") %>% 
+      mutate(label = attributes(FC[[i]])$label) %>% 
+      mutate(ftarget = ft) %>% 
+      tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"tsb:high") %>% 
+      tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+      tidyr::pivot_wider(names_from=type, values_from=data)
+    )
+}
+
+save(fc, file="LIN.27.5b/forecast_df.RData")
+writexl::write_xlsx(fc, path="LIN.27.5b/forecast_df.xlsx")
+# plot
+
+# fc %>% 
+#   filter(year > 2020) %>% 
+#   filter(var %in% c("catch","ssb")) %>% 
+#   
+#   ggplot(aes(x=ft, y=median, group=var)) +
+#   geom_line() +
+#   expand_limits(y=0) +
+#   facet_grid(var~year, scales="free_y")
+
+
+# current year
+fc %>% 
+  filter(year==2021) %>% 
+  filter(label=="Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# forecast
+fc %>% 
+  mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  filter(year %in% c(2022, 2023)) %>% 
+  
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  
+  filter(var %in% c("ssb","catch")) %>%
+  mutate(var2 = paste(var,year,sep="_")) %>% 
+  dplyr::select(-year, -var) %>% 
+  
+  tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+  dplyr::select(label, ft, catch_2022, ssb_2022, ssb_2023) %>% 
+  pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+  
+
+
+
+
+```
+
