@@ -1,0 +1,638 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.6.dotx
+---
+
+```{r setup, include=FALSE}
+# -------------------------------------------------------------------------------------
+# CPUE standardizing for argentines: pfa + faroer data
+#
+# 23/04/2020 modified the calculation of CPUE (catch by day and by rectangle)
+# 25/04/2020 added option for standardization by haul; rearranged data processing steps
+# 09/04/2021 adapted for WGDEEP 2021
+# 12/04/2022 adapted for WGDEEP 2022
+# -------------------------------------------------------------------------------------
+
+# ================================================================================
+# 0. Initialization. Set working directory and filename and sourcing
+# ================================================================================
+
+require("knitr")
+knitr::opts_chunk$set(echo=FALSE,fig.width=10,message=FALSE,warning=FALSE,comment="",crop=TRUE)
+knit_hooks$set(crop = hook_pdfcrop)
+
+rm(list=ls())
+options(dplyr.summarise.inform = FALSE)
+
+global_plot_map   <- TRUE
+global_plot_fao   <- TRUE
+global_plot_depth <- FALSE
+
+# Libraries
+library(rmarkdown)
+library(maps)          # world maps
+library(sp)            # spatial data 
+require(geosphere, quietly=TRUE)           # spatial manipulation
+
+library(pander)        # tables
+library(colorspace)    # hcl colours
+library(viridis)       # Viridis colour scheme
+library(RColorBrewer)  # ColourBrewer
+
+library(tidyverse)     # combined package of dplyr, tidyr, ggplot, readr, purrr and tibble
+library(lubridate)     # data handling
+library(reshape2)      # reshaping data; e.g. cast
+library(readxl)        # excel reader
+library(broom)         # clean up statistics
+library(scales)        # pretty scales
+library(stringr)       # string manipulations
+library(magrittr)      # for e.g. set_colnames
+library(captioner)     # captioning of figures and tables
+
+library(mgcv)          # tensor spline for gam
+library(lme4)
+library(MASS)
+library(mgcViz)         # GAM output to ggplot
+
+# To number figures and tables
+fig_nums <- captioner::captioner(prefix = "Figure ")
+tab_nums <- captioner::captioner(prefix = "Table ")
+
+# default settings for tables
+panderOptions('table.alignment.default', function(df) ifelse(sapply(df, is.numeric), 'right', 'left'))
+
+# Source helper function
+source("lowcase.r")
+source("theme_publication.r")
+source("get_onedrive.r")
+
+# set onedrive directory
+onedrive <- get_onedrive() 
+
+# lastyear, thisyear
+lastyear <- 2021
+thisyear <- 2022
+
+# set data path
+lastyearpath <- "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/WGDEEP/2021 Meeting Docs/06. Data/aru.27.5b6a/CPUE"
+thisyearpath <- "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/WGDEEP/2022 Meeting Docs/06. Data/aru.27.5b6a/CPUE"
+
+pfa_file    <- "pfa_arg_raw 2001-2021.RData"
+faroe_file  <- "FaroeGSS_CommTrawlData 1995-2021.xlsx"
+
+# wkgsspath  <- "//community.ices.dk/ExpertGroups/benchmarks/2020/wkdeep/2014 Meeting docs/06. Data/aru.27.5b6a/CPUE"
+  
+# load spatial datasets
+load(file.path(onedrive, "rdata/world.df.RData"))
+load(file.path(onedrive, "rdata/fao.df.RData"))
+load(file.path(onedrive, "rdata/depth200.df.RData"))
+load(file.path(onedrive, "rdata/fao.RData"))
+
+rect <- 
+  get(load(file.path(onedrive, "rdata/icesrectangles.df.RData"))) %>% 
+  group_by(rect) %>% 
+  filter(row_number() == 1) %>% 
+  dplyr::select(rect, long, lat)
+
+
+# CI function
+make_ci <- function(pred, data){
+  fit <- pred$fit
+  lwr <- exp(pred$fit - (1.96 * pred$se.fit))
+  upr <- exp(pred$fit + (1.96 * pred$se.fit))
+  return(data.frame(fit, lwr, upr, data))
+  }
+
+# WKGSS 2021 CPUE index
+lastyear_cpue_index <-
+  read.csv(file.path(lastyearpath, "Standardized commercial cpue 2005-2020.csv")) %>% 
+  mutate(type=paste0("wgdeep",lastyear))
+
+# --------------------------------------------------------------------
+# read in information as used in this meeting of WGDEEP
+# --------------------------------------------------------------------
+
+#  Load the PFA CPUE data
+pfa_arg_raw <- 
+  get(load(file.path(thisyearpath, pfa_file))) %>% mutate(fleet="pfa") 
+# summarize(pfa_arg_raw, nhauls=n())
+
+# Load the Faroer CPUE data
+
+faroer_aru_raw <-
+    read_excel(file.path(thisyearpath, faroe_file), 
+             col_names = TRUE,
+             col_types = "text") %>% 
+  lowcase() %>% 
+  setNames(gsub("icesrect","rect", names(.))) %>% 
+  setNames(gsub("hours","duration", names(.))) %>% 
+  setNames(gsub("gsskg","catch", names(.))) %>% 
+  setNames(gsub("depthm","depth", names(.))) %>% 
+  
+  mutate_at(c("vessel"), list(as.character)) %>% 
+  mutate_at(c( "year", "month", "day"), list(as.integer)) %>% 
+  mutate_at(c("duration", "catch", "depth"), list(as.numeric)) %>% 
+
+  mutate(
+    catch = catch/1000,   # catch in tonnes
+    date  = as.Date(day, origin="1899-12-30"),
+    day   = day(date),
+    yday  = yday(date),
+    week  = as.numeric(week(date)),
+    time  = format(strptime(sprintf("%04d", as.numeric(shoottime)), format="%H%M"), 
+                   format = "%H:%M"),
+    shoot_time = ymd_hm(paste(date, time)), 
+    fleet = "faroer", species="aru") %>% 
+  
+  ungroup() %>% 
+  dplyr::select(vesselid=vessel, date, year, month, week, day, yday, shoot_time, depth,
+                catch, duration, rect, species, fleet)
+
+comb_arg_byhaul <-
+  bind_rows(faroer_aru_raw, pfa_arg_raw) %>% 
+  
+  # add rectangle information
+  left_join(rect, by = "rect") %>% 
+  
+  # add hset time and depth category 
+  mutate(hset      = as.numeric(strftime(shoot_time, format="%H"))) %>% 
+  mutate(hset_cat  = cut(hset, include.lowest = TRUE, breaks=c(0,2,4,6,8,10,12,14,16,18,20,22,24))) %>% 
+  mutate(depth_cat = cut(depth, breaks=c(0, 200, 300, 400, 500, 600, 700, 2500), right = FALSE)) %>% 
+  
+  mutate(cpue_hour = catch / duration) %>% 
+  mutate(cpue_haul = catch) %>% 
+  
+  # filter area and weeks
+  filter(long > -18, long < 5) %>% 
+  # filter(lat  >=59.5, lat <= 62.5) %>% 
+  filter(week %in% c(15:34)) %>% 
+  filter(year > 2004) %>% 
+  filter(!is.na(depth)) 
+
+# comb_arg_byhaul %>% filter(fleet=="pfa") %>% View()
+# pfa_arg_raw %>% left_join(rect) %>% dplyr::select(lat) %>% hist(as.numeric(lat))
+# comb_arg_byhaul %>%  filter(fleet=="pfa") %>% ggplot(aes(lat)) + geom_histogram()
+
+comb_arg_byday <-
+  comb_arg_byhaul %>% 
+  
+  # aggregate within vessels and days
+  group_by(fleet, vesselid, year, week, rect, long, lat) %>%
+  summarize(catch    = sum(catch, na.rm=TRUE), 
+            duration = sum(duration, na.rm=TRUE),
+            nhauls   = n(),
+            ndays    = n_distinct(date),
+            depth    = mean(depth, na.rm=TRUE)) %>% 
+  arrange(fleet, year, week, vesselid) %>% 
+  # filter(fleet=="pfa")
+
+  # sum over vessels and days
+  group_by(fleet, year, week, rect, long, lat) %>%
+  summarize(catch    = sum(catch, na.rm=TRUE), 
+            duration = sum(duration, na.rm=TRUE),
+            nhauls   = sum(nhauls, na.rm=TRUE),
+            ndays    = sum(ndays, na.rm=TRUE),
+            depth    = mean(depth, na.rm=TRUE)) %>% 
+  
+  # calculate CPUE
+  mutate(cpue_day = catch / ndays) %>% 
+  mutate(depth_cat= cut(depth, breaks=c(0, 200, 300, 400, 500, 600, 700, 2500), right = FALSE)) %>% 
+  
+  ungroup() %>% 
+  
+  # explanatory variables should be factors
+  mutate(year = as.factor(year),
+         week = as.factor(week),
+         long_cat = as.factor(long),
+         lat_cat = as.factor(lat)) 
+
+# comb_arg_byday %>% filter(fleet=="pfa") %>% View()
+
+```
+
+WGDEEP 2022, WD xx
+
+
+**CPUE Standardization of Silver smelt in 5b and 6a @ WGDEEP 2022**
+
+M.A. Pastoors, L.H. Ofstad and H. Olsen
+
+Corresponding author: mpastoors@pelagicfish.eu
+
+`r format(Sys.time(), '%d/%m/%Y')`
+
+**Abstract ** 
+
+At the WKGSS 2020 benchmark of Greater silver smelt in 5b and 6a, a combined and standardized CPUE series for the Faroe and EU fleets has been introduced (Quirijns and Pastoors 2020). On checking the data in preparation for WGDEEP 2020, a small error was detected in the way CPUE was calculated, which was corrected in the assessment in WGDEEP 2020. Here the method applied in WGDEEP 2020 has been extended to cover the whole time series up to 2021.
+
+It is noted that the signals in the two separate CPUE series are somewhat different in the most recent year, with a decline observed in the Faroese CPUE and an increase observed in the PFA CPUE. 
+
+
+<!--1. Introduction ------------------------------------------------------ -->
+
+# Introduction
+
+At the WKGSS 2020 benchmark of Greater silver smelt in 5b and 6a, a combined and standardized CPUE series for the Faroe and EU fleets has been introduced (Quirijns and Pastoors 2020). During WGDEEP 2020 two small errors were detected in the way CPUE was calculated and solutions to these errors were provided (Pastoors and Quirijns 2020).  This report provides a an update of the CPUE calculation for Greater silver smelt, with the time series update to 2021 according to the method agreed in WGDEEP 2020. 
+
+# Results
+
+```{r echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "metrics", 
+  caption = "ARU.27.5b6a metrics describing the fisheries",
+  display = FALSE)
+
+t1 <- comb_arg_byhaul %>% 
+  group_by(fleet, year) %>% 
+  summarise(nvessels = n_distinct(vesselid)) %>% 
+  pivot_longer(names_to="variable", values_to="value", c("nvessels"))
+
+t2 <- comb_arg_byhaul %>% 
+  group_by(fleet, year,vesselid) %>% 
+  summarise(ndays = n_distinct(date)) %>% 
+  group_by(fleet, year) %>% 
+  summarise(ndays=sum(ndays, na.rm=TRUE)) %>% 
+  pivot_longer(names_to="variable", values_to="value", c("ndays"))
+
+t3 <- comb_arg_byhaul  %>%
+  group_by(fleet, year) %>% 
+  summarise(
+    nhauls = n(),
+    catch  = sum(catch, na.rm=TRUE),
+    nhours = sum(duration, na.rm=TRUE)) %>% 
+  pivot_longer(names_to="variable", values_to="value", c("nhauls","catch","nhours"))
+
+t4 <- comb_arg_byday  %>%
+  mutate(year = as.numeric(as.character(year))) %>% 
+  group_by(fleet, year) %>% 
+  summarise(
+    catch_day = sum(catch, na.rm=TRUE)/sum(ndays, na.rm=TRUE)) %>% 
+  pivot_longer(names_to="variable", values_to="value", c("catch_day"))
+
+bind_rows(t1, t2, t3, t4) %>% 
+  mutate(variable = factor(variable, levels=c("nvessels","ndays","nhauls","nhours","catch","catch_day"))) %>% 
+  ggplot(aes(x=year, y=value, group=fleet)) +
+  theme_publication() +
+  geom_bar(aes(fill=fleet), stat="identity", position = position_dodge2(preserve = "single") ) +
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=2)
+
+
+
+```
+*`r fig_nums("metrics")`*
+
+##### page break
+
+The 'raw' (unstandardized) CPUE is based on the catch per day. 
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "cpue", 
+  caption = "ARU.27.5b6a Catch per unit effort.",
+  display = FALSE)
+
+comb_arg_byday %>%
+  mutate(
+    year      = factor(year),
+    catch_day = cpue_day) %>% 
+    
+  ggplot(aes(x=year, y=catch_day)) +
+  theme_publication() +
+  theme(legend.position="none") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_boxplot(aes(fill=factor(fleet)), position = position_dodge2(preserve = "single")) +
+  labs(x="") +
+  facet_wrap(~fleet, scales="free_y")
+
+
+```
+
+*`r fig_nums("cpue")`*
+
+##### page break
+
+For the years 2005-`r lastyear`, below are the spatial distributions of the used number of hauls by fleet. 
+
+```{r echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "plothauls", 
+  caption = "ARU.27.5b6a plot of the number of hauls by rectangle and day",
+  display = FALSE)
+
+bind_rows(pfa_arg_raw, faroer_aru_raw) %>% 
+  left_join(rect) %>% 
+  mutate(year = as.numeric(as.character(year))) %>% 
+  group_by(fleet, year, lat, long) %>% 
+  summarize(nhauls = n()) %>% 
+  filter(year >= 2005) %>% 
+  ungroup() %>% 
+  
+  ggplot(aes(x=long, y=lat)) +
+  theme_publication() +
+
+  coord_quickmap(xlim=c(-18,2) , ylim=c(54,64)) +
+  geom_polygon(data=fao.df, aes(long, lat, group=group), 
+               fill = NA, size=0.25, color="gray60", alpha=0.3) +
+  geom_polygon(data=world.df, aes(long,lat,group=group), 
+               fill="cornsilk", size=0.25,color="gray15", alpha=0.7) +
+  geom_point(aes(long, lat, colour = fleet, size=nhauls), alpha=0.5) +
+  # scale_fill_brewer(palette = "YlOrRd") + 
+  labs(x = NULL, y = NULL) +
+  # guides(colour = FALSE) +
+  facet_wrap(~year)
+
+
+
+
+```
+
+*`r fig_nums("plothauls")`*
+
+##### page break
+
+**Standardized CPUE index**
+
+We applied the same model for standardization of of CPUE: CPUE ~ year + week + depth, where CPUE is expressed as catch per day and per rectangle. Catches have first been summed by vessel, year, week and rectangle and the number of hauls and fishing days have been calculated. Then the catches and effort (fishing days) have been summed over all vessels by year and week and the average depth has been calculated. CPUE was then calculated as the average catch per rectangle and per day.    
+
+```{r echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "standardizedcpue", 
+  caption = "ARU.27.5b6a standardized CPUE (catch per rectangle and day), in comparison with WKGSS series",
+  display = FALSE)
+
+# This is important for the ordering of factors: the base level is set to be
+# the last level of the factor. More explanations: ?contrasts
+options(contrast=c("contr.SAS","contr.poly"))
+
+dataset <- "comb_arg_byday"
+cpuevar <- "cpue_day"
+
+# Specify the model 
+form <- as.formula(get(cpuevar) ~ year + week + depth_cat) # this is the model
+
+glm  <- MASS::glm.nb(
+  form,                           # input formula
+  data=get(dataset),                            # input dataset
+  link=log,                             # log link function because of the negative binomial
+  na.action=na.exclude,                 # all NAs will be removed
+  control=glm.control(epsilon = 1e-08,  # change between iterations; once it is this small it stops
+                        maxit = 100 ) # no more than 100 iterations
+ )  
+
+# create newdat
+newdat <- expand.grid(
+  year     = unique(get(dataset)$year),
+  week     = unique(get(dataset)$week),
+  depth_cat= levels(get(dataset)$depth_cat)) 
+
+# Final GAM model
+gam <- mgcv::gam(form, 
+           data=get(dataset),
+           family=mgcv::negbin(MASS::glm.nb(form,
+                                            data=get(dataset), 
+                                            link=log,
+                                            na.action=na.exclude)$theta))
+
+
+# get the prediction
+pred <- predict(gam,newdata=newdat,se.fit=TRUE,type = "link")
+
+
+df <-
+  make_ci(pred, newdat) %>% 
+  mutate(cpue = exp(pred$fit),
+         type = paste0("wgdeep", thisyear)) %>% 
+  filter(depth_cat == "[300,400)",
+         week == "29") %>%   
+  dplyr::select(-fit) %>% 
+  remove_rownames()
+
+# with(cpue, table(depth_cat, week))
+
+# glimpse(wkgss_cpue_index)
+
+df %>% 
+  mutate(year = as.integer(as.character(year))) %>% 
+  bind_rows(lastyear_cpue_index) %>% 
+  
+  ggplot(aes(x=year, y=cpue)) +
+  theme_publication() +
+  # theme(legend.position = "none") +
+  
+  # geom_ribbon(data=wkgss_cpue_index, aes(ymin=lwr, ymax=upr, fill=type), alpha=0.2) +
+  # geom_path  (data=wkgss_cpue_index, aes(y=cpue, colour=type)) +
+  # geom_point (data=wkgss_cpue_index, aes(y=cpue, colour=type)) +
+  
+  geom_path(aes(y=cpue, colour=type), size=1) +
+  geom_point(aes(y=cpue, colour=type), size=2) +
+  geom_errorbar(aes(ymin=lwr, ymax=upr, colour=type), width=.2) + 
+  expand_limits(y=0) +
+  labs(y="cpue (tonnes/day)") 
+
+# plot diagnostics for glm
+# par(mfrow=c(2,2)); mgcv::gam.check(glm)
+
+# plot diagnostics for gam
+# mgcv::plot.gam(gam, all.terms=T, page=1)
+# mgcViz::plot.gamViz(gam, select=1)
+
+# plot diagnostics for glm2
+# par(mfrow=c(2,2)); gam.check(gam)
+
+```
+
+*`r fig_nums("standardizedcpue")`*
+
+##### page break
+
+**Model diagnostics**
+
+```{r echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "diagnostics", 
+  caption = "ARU.27.5b6a standardized CPUE model diagnostics",
+  display = FALSE)
+
+# plot diagnostics for gam
+# mgcv::plot.gam(gam, all.terms=T, page=1)
+# mgcViz::plot.gamViz(gam, select=1)
+
+# plot diagnostics for glm2
+par(mfrow=c(2,2)); gam.check(gam)
+
+```
+
+*`r fig_nums("diagnostics")`*
+
+**Evaluation of explanatory variables**
+
+```{r echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "variables", 
+  caption = "ARU.27.5b6a standardized CPUE explanatory variables",
+  display = FALSE)
+
+# plot diagnostics for gam
+mgcv::plot.gam(gam, all.terms=T, page=1)
+
+```
+
+*`r fig_nums("variables")`*
+
+##### page break
+
+```{r echo=FALSE, fig.asp=0.7, fig.align="center", message=FALSE, warning=FALSE}
+
+tab_nums(
+  name    = "cpuetable", 
+  caption = "ARU.27.5b6a standardized commercial CPUE (tonnes/day) for greater silversmelt, with lower and upper values based on the standard error.",
+  display = FALSE)
+
+df %>%   
+  ungroup() %>%
+  mutate(year = as.character(year)) %>%
+  dplyr::select(year, cpue, lwr, upr) %>%
+  pandoc.table(., 
+               style        = "simple",
+               split.tables = 100, 
+               split.cells  = c(rep(7,10)),
+               justify      = "right",
+               missing      =".",
+               big.mark     = ',', 
+               round        = c(0,2,2,2,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0))
+
+
+
+# save to csv
+df %>%   
+  mutate(year = as.character(year)) %>% 
+  dplyr::select(year, cpue, lwr, upr) %>% 
+  write.csv(file=file.path(thisyearpath, paste0("Standardized commercial cpue 2005-",lastyear,".csv")), row.names = FALSE)
+
+```
+
+*`r tab_nums("cpuetable")`*
+
+##### page break
+
+**Single fleet analysis**
+
+A single fleet analysis was carried out by using the combined raw CPUE datasets and extracting the separate parts for the Faroese and PFA fleets. These data were then processed in a similar fashion as in the combined analysis. It is clear that the Faroese data is substantially more precise that the data from PFA as evident from the confidence intervals. This is likely due to the number of observations, where the dataset from Faroe Islands over all years is based on 10 times the number of hauls compared to the PFA data. In addition, the Faroese fishery is a targeted fishery for silver smelt, while the PFA fishery is a mixed fishery with blue whiting in the daytime and silver smelt in the nighttime. 
+
+It is noted that the signals in the two separate CPUE series are somewhat different in the most recent year, with a decline observed in the Faroese CPUE and an increase observed in the PFA CPUE. 
+
+```{r echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(
+  name    = "singlefleet", 
+  caption = "ARU.27.5b6a standardized single fleet CPUE (catch per rectangle and day)",
+  display = FALSE)
+
+dataset <- "comb_arg_byday"
+cpuevar <- "cpue_day"
+
+# Specify the model 
+form <- as.formula(get(cpuevar) ~ year + week + depth_cat) # this is the model
+
+# PFA only
+
+cpue_onlypfa     <- 
+  filter(get(dataset), fleet == "pfa") %>% group_by(year) %>% filter(year != "2005")
+
+# save(cpue_onlypfa, file="onlypfa.RData")
+# cpue_onlypfa %>% group_by() %>% summarize(nhauls=sum(nhauls))
+
+finalMod_onlypfa <- 
+  gam(form, data=cpue_onlypfa,
+                family=negbin(glm.nb(form,
+                                     data=cpue_onlypfa, 
+                                     link=log,
+                                     na.action=na.exclude)$theta))
+
+newdat_onlypfa <- 
+  expand.grid(
+    year        = unique(cpue_onlypfa$year),
+    week        = unique(cpue_onlypfa$week),
+    depth_cat   = unique(cpue_onlypfa$depth_cat))
+
+pred_onlypfa      <- 
+  predict(finalMod_onlypfa ,newdat_onlypfa,se.fit=T,type="link")
+
+df_onlypfa <-
+  make_ci(pred_onlypfa, newdat_onlypfa) %>% 
+  mutate(
+    cpue = exp(pred_onlypfa$fit), 
+    fleet = "pfa") %>% 
+  filter(depth_cat == "[300,400)", week == "21")
+
+
+# Faroer only
+
+cpue_onlyfar     <- 
+  filter(get(dataset), fleet == "faroer" )
+
+finalMod_onlyfar <- 
+  gam(form, data=cpue_onlyfar,
+                family=negbin(glm.nb(form,
+                                     data=cpue_onlyfar,
+                                     link=log,
+                                     na.action=na.exclude)$theta))
+
+newdat_onlyfar <- expand.grid(
+    year        = unique(cpue_onlyfar$year),
+    week        = unique(cpue_onlyfar$week),
+    depth_cat   = unique(cpue_onlyfar$depth_cat))
+
+# calculate the predicted values and confidence intervals
+pred_onlyfar      <- 
+  predict(finalMod_onlyfar ,newdat_onlyfar,se.fit=T,type="link")
+
+df_onlyfar <-
+  make_ci(pred_onlyfar, newdat_onlyfar) %>% 
+  mutate(
+    cpue = exp(pred_onlyfar$fit), 
+    fleet = "faroer") %>% 
+  filter(depth_cat == "[300,400)", week == "21")
+
+bind_rows(df_onlyfar, df_onlypfa) %>% 
+  mutate(year = as.numeric(as.character(year))) %>% 
+  
+  ggplot(aes(year)) +
+  theme_publication() +
+  theme(legend.position  = "none") +
+  geom_ribbon(aes(ymin=lwr, ymax=upr, fill=fleet), alpha=0.2) +
+  geom_line(aes(y=cpue, colour=fleet), size=1) +
+  geom_point(aes(y=cpue, colour=fleet), size=1.5) +
+  expand_limits(y=0) +
+  labs(y="cpue (tonnes per day)") +
+  facet_wrap(~fleet, ncol=2)
+
+```
+
+*`r fig_nums("singlefleet")`*
+
+# Discussion
+
+CPUE standardization using GLM procedures is a common way of dealing with CPUE information. Here we used aggregated data (catch per day) as the main response variable and year, week and depth category as explanatory variables. by area and period, which cannot use attributes that are related to the hauls. The standardized CPUE for WGDEEP 2022 is highly consistent with the CPUE that was calculated during WGDEEP 2020. 
+
+Both data sources (Faroese data and PFA data) indicate an increase in CPUE in the last 5-6 years although it does not reach the level seen in the late 2000s. The data from the Faroese fisheries are generated from a targetted fishery on silver smelt, while the data from the PFA is from a mixed fishery with blue whiting (blue whiting in the daytime, silver smelt in the nighttime). This probably leads to the higher uncertainties in the CPUE estimates for the PFA compared to the Faroese fleet. It is also noted that the number of observations in the PFA fisheries prior to 2015 is much lower than after 2015, because the self-sampling program only started in 2015. 
+
+It is noted that the signals in the two separate CPUE series are somewhat different in the most recent year, with a decline observed in the Faroese CPUE and an increase observed in the PFA CPUE. 
+
+# References
+
+ICES (2020). Working Group on the Biology and Assessment of Deep-sea Fisheries Resources (WGDEEP). ICES Scientific Reports. Volume 2, Issue 38: 928 pp.
+
+Pastoors, M. A. and F. J. Quirijns (2020). Correcting an error in the CPUE Standardizing of Greater silversmelt for WGDEEP 2020, WD05.
+
+Quirijns, F. J. and M. A. Pastoors (2020). CPUE standardization for greater silversmelt in 5b6a. WKGSS 2020, WD03.
+
+
