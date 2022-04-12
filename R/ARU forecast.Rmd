@@ -270,11 +270,11 @@ source("fix_forecast.r")
 Ry  <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
 fsq <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
 
-# ft   <- c(  fsq, 0.000001,   0.2,  0.241,  0.33,     seq(0.01,0.3,0.01) )
-# labs <- c("Fsq",  "Fzero","Fmsy1","Fmsy2", "Fp0.5",  paste0("F=",as.character(seq(0.01,0.3,0.01))) )
+ft   <- c(  fsq, 0.000001,   0.2,  0.241,  0.33,     seq(0.01,0.3,0.01) )
+labs <- c("Fsq",  "Fzero","Fmsy1","Fmsy2", "Fp0.5",  paste0("F=",as.character(seq(0.01,0.3,0.01))) )
 
-ft   <- c(  fsq, 0.000001,   0.2,  0.241,  0.33 )
-labs <- c("Fsq",  "Fzero","Fmsy1","Fmsy2", "Fp0.5")
+# ft   <- c(  fsq, 0.000001,   0.2,  0.241,  0.33 )
+# labs <- c("Fsq",  "Fzero","Fmsy1","Fmsy2", "Fp0.5")
 
 FC<-list()
 fc <- data.frame(stringsAsFactors = FALSE)
