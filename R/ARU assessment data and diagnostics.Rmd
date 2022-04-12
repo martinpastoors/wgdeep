@@ -51,6 +51,14 @@ getfitfromweb <- function(nam){
   }
 # getfitfromweb(nam="WGDEEP_2020")
 
+getretrofromweb <- function(nam){
+  dir.create(file.path(nam))
+  download.file(file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs/user233",
+                          nam, "run","retro.RData"), file.path(nam, "retro.RData"))
+  load(file.path(nam, "retro.RData"))
+  return(RETRO)
+  }
+
 
 getparsfromfit <- function(fit) {
   # a  <- gsub("fit_", "", fit) 
@@ -73,7 +81,9 @@ getparsfromfit <- function(fit) {
 # getfitfromweb(nam="WGDEEP_2020")
 
 nam         <- "ARU.27.5b6a_WGDEEP_2021"
-assessments <- c("ARU.27.5b6a_WGDEEP_2020_", "ARU.27.5b6a_WGDEEP_2021", "Aru.27.5b6a_wgdeep2021_trial_deepsurv")
+# assessments <- c("ARU.27.5b6a_WGDEEP_2020_", "ARU.27.5b6a_WGDEEP_2021", "Aru.27.5b6a_wgdeep2021_trial_deepsurv")
+# assessments <- c("ARU.27.5b6a_WGDEEP_2021", "ARU.27.5b6a_WGDEEP_2021_DWalk")
+assessments <- c("ARU.27.5b6a_WGDEEP_2020_", "ARU.27.5b6a_WGDEEP_2021")
 user        <- "user233"
 web         <- TRUE
 
@@ -128,6 +138,7 @@ fleetnames <-
   mutate(fleetname2 = substr(fleetname, 1, 12))
 
 fit  <- fit_ARU.27.5b6a_WGDEEP_2021
+retro <- getretrofromweb(nam)
 conf <- fit$conf
 sd   <- fit$pl
 data <- fit$data
@@ -166,12 +177,10 @@ t2 <-
   left_join(fleetnames, by="fleet") %>% 
   mutate(parname = paste(fleetname2, ages))
 
-conf$keyVarF
-
 t3 <- 
   as.data.frame(conf$keyVarObs) %>% 
   rownames_to_column(var="fleet") %>% 
-  pivot_longer(names_to="test", values_to="parnumber", cols=1:nc+1) %>% 
+  pivot_longer(names_to="test", values_to="parnumber", cols=1:nc+1) 
 
 # "sdrep" parameter estimates TMB report
 # "pl"    parameter list
@@ -205,6 +214,33 @@ for (i in 1:nrow(l1)) {
 
 l3 <- l3 %>% dplyr::select(level1, level2, level3)
 
+
+sam2rby <- function (fit) {
+    pY <- stockassessment::catchtable(fit) %>% as.data.frame() %>% 
+        dplyr::bind_cols(year=as.integer(fit$data$years)) %>% dplyr::mutate(variable = "catch")
+    rec <- stockassessment::rectable(fit) %>% as.data.frame() %>% 
+        dplyr::mutate(year = rownames(.) %>% as.integer(), variable = "rec")
+    ssb <- stockassessment::ssbtable(fit) %>% as.data.frame() %>% 
+        dplyr::mutate(year = rownames(.) %>% as.integer(), variable = "ssb")
+    tsb <- stockassessment::tsbtable(fit) %>% as.data.frame() %>% 
+        dplyr::mutate(year = rownames(.) %>% as.integer(), variable = "tsb")
+    fbar <- stockassessment::fbartable(fit) %>% as.data.frame() %>% 
+        dplyr::mutate(year = rownames(.) %>% as.integer(), variable = "fbar")
+    pY %>% dplyr::bind_rows(rec) %>% dplyr::bind_rows(ssb) %>% 
+        dplyr::bind_rows(tsb) %>% dplyr::bind_rows(fbar) %>% 
+        dplyr::mutate(ly = max(fit$data$years)) %>% 
+        dplyr::as_tibble()
+}
+
+df_retro <- sam2rby(fit)
+for (i in 1:length(retro)) {
+  print(i)
+  df_retro <-
+    bind_rows(
+      df_retro,
+      sam2rby(retro[[i]])
+    )
+}
 
 
 ```
@@ -490,18 +526,92 @@ print(patchwork::wrap_plots(plist) +
 
 ```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
 
+addUnits <- function(n) {
+  labels <- ifelse(n < 1000, n,  # less than thousands
+                   ifelse(n < 1e6, paste0(round(n/1e3), 'k'),  # in thousands
+                          ifelse(n < 1e9, paste0(round(n/1e6), 'M'),  # in millions
+                                 ifelse(n < 1e12, paste0(round(n/1e9), 'B'), # in billions
+                                        ifelse(n < 1e15, paste0(round(n/1e12), 'T'), # in trillions
+                                               'too big!'
+                                        )))))
+  return(labels)
+}
+
+# observed catch in tonnes
+ct <- 
+  read.table("ct.dat", skip=5) %>% 
+  as.data.frame() %>%
+  setNames("estimate") %>% 
+  mutate(
+    estimate   = as.numeric(estimate),
+    source="intercatch",
+    variable   = "catch", 
+  ) %>% 
+  bind_cols(year=fit$data$years) %>% 
+  mutate(year  = as.numeric(year))
+
+
 # plot of trend by variable
 rby %>% 
   # filter(stock %in% c("ARU.27.5b6a_WGDEEP_2020_","ARU.27.5b6a_WGDEEP_2020_mp")) %>% 
-  filter(variable %in% c("ssb","fbar","rec")) %>% 
-  mutate(variable = factor(variable, levels=c("ssb","fbar","rec"))) %>% 
+  filter(variable %in% c("catch", "ssb","fbar","rec")) %>% 
+  mutate(variable = factor(variable, levels=c("catch", "ssb","fbar","rec"))) %>% 
+  mutate(year = ifelse(year < 1000, year+1994, year)) %>% 
   
   ggplot(aes(x=year,y=Estimate, group=file)) +
   theme_publication() +
-  geom_line(aes(colour=file)) +
+  theme(legend.title=element_blank()) +
   geom_ribbon(aes(ymin=Low, ymax=High, fill=file), alpha=0.3) +
+  geom_line(aes(colour=file)) +
+  geom_point(aes(colour=file)) +
+  
+  geom_point(data=ct, aes(x=year,y=estimate), inherit.aes = FALSE, shape=3) +
+  
+  scale_y_continuous(labels = addUnits) +
   expand_limits(y=0) +
-  facet_wrap(~variable, scales="free_y", ncol=1)
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=2)
+
+# stockassessment::fbartable(fit)
+
+
+```
+
+**Retro of the Assessments**
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+addUnits <- function(n) {
+  labels <- ifelse(n < 1000, n,  # less than thousands
+                   ifelse(n < 1e6, paste0(round(n/1e3), 'k'),  # in thousands
+                          ifelse(n < 1e9, paste0(round(n/1e6), 'M'),  # in millions
+                                 ifelse(n < 1e12, paste0(round(n/1e9), 'B'), # in billions
+                                        ifelse(n < 1e15, paste0(round(n/1e12), 'T'), # in trillions
+                                               'too big!'
+                                        )))))
+  return(labels)
+}
+
+df_retro <-
+  df_retro %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec"))) 
+
+# plot of trend by variable
+df_retro %>% 
+
+  ggplot(aes(x=year,y=Estimate, group=ly)) +
+  theme_publication() +
+  theme(legend.position = "none") +
+  theme(legend.title=element_blank()) +
+  geom_ribbon(data=filter(df_retro, ly == max(ly), variable %in% c("ssb","fbar","rec")),
+              aes(ymin=Low, ymax=High, fill=ly), alpha=0.3) +
+  geom_line(aes(colour=ly)) +
+  geom_point(aes(colour=ly)) +
+  scale_y_continuous(labels = addUnits) +
+  expand_limits(y=0) +
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=3)
 
 # stockassessment::fbartable(fit)
 
@@ -518,10 +628,16 @@ fit <- fit_ARU.27.5b6a_WGDEEP_2021
 
 source("fix_forecast.r")
 
+
 Ry  <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
 fsq <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
 ft   <- c(  fsq, 0.000001,   0.2,  0.241,  0.33,     seq(0.01,0.3,0.01) )
 labs <- c("Fsq",  "Fzero","Fmsy1","Fmsy2", "Fp0.5",  paste0("F=",as.character(seq(0.01,0.3,0.01))) )
+
+# ft   <- c(  fsq)
+# labs <- c("Fsq" )
+# rectab<-rectable(fit)
+# recpool<-rectab[rownames(rectab)%in%Ry,1]
 
 FC<-list()
 fc <- data.frame(stringsAsFactors = FALSE)
@@ -537,6 +653,13 @@ for (i in 1:length(ft)) {
       processNoise = FALSE,
       addTSB = TRUE
     )
+  # FC[[i]] <-forecast(
+  #     fit,
+  #     fscale = c(NA, NA, NA, NA, NA),
+  #     fval = c(fsq, fsq, ft[i], ft[i], ft[i]),
+  #     rec.years = Ry,
+  #     label = labs[i]
+  #   )
   fc <-
     bind_rows(
       fc,
