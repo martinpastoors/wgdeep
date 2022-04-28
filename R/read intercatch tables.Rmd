@@ -1,0 +1,277 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.5.dotx
+---
+
+```{r setup, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+# =======================================================================================
+# read intercatch tables.Rmd
+# 
+# 13/04/2022 Converted from r code to markdown
+# =======================================================================================
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
+knitr::opts_chunk$set(fig.width=10) 
+
+rm(list=ls());
+
+# libraries
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(RColorBrewer)
+library(pander)
+library(reshape2)
+library(writexl)
+
+library(captioner)     # captions
+tab_nums <- captioner::captioner(prefix = "Table", levels=1, type=c("n"), infix=".")
+fig_nums <- captioner::captioner(prefix = "Figure", levels=1, type=c("n"), infix=".")
+
+
+source("lowcase.r")
+source("theme_publication.r")
+
+options(max.print=999999)
+
+# folder <- "aru.27.5b6a_2018_ 2022-4-14 08_04_39"
+# folder <- "aru.27.5b6a_2019_ 2022-4-14 08_09_33"
+# folder <- "aru.27.5b6a_2020_ 2022-4-14 08_14_41"
+# folder <- "aru.27.5b6a_2021_ 2022-4-8 14_16_09 age"
+folder <- "aru.27.5b6a_2021_ 2022-4-13 13_35_18"
+
+datapath <- file.path("//community.ices.dk@SSL/ExpertGroups/WGDEEP/2022 Meeting docs/06. Data/aru.27.5b6a/InterCatch", folder)
+# datapath <- file.path("C:/DATA/Onedrive - PFA/Documents/iWGDEEP/2021/06. Data/aru.27.5b6a/InterCatch", folder)
+
+# find rows where table 1 and table 2 start
+tst <- readLines(file.path(datapath, "CatchAndSampleDataTables.txt"), n=-1, encoding = "UTF8") 
+
+table1_start <- min(grep("^TABLE 1\\.", tst))+7
+table2_start <- min(grep("^TABLE 2\\.", tst))+7
+
+table1_rows <- table2_start - table1_start - 9
+table2_rows <- length(tst) - table2_start
+
+# tst[table1_start]
+# tst[table2_start]
+# tst[table2_start+table2_rows]
+
+# ---------------------------------------------------------------------------------
+# Load tables
+# ---------------------------------------------------------------------------------
+
+# This table shows ALL catch data in tonnes
+t1 <- 
+  read.delim(
+    file=file.path(datapath, "CatchAndSampleDataTables.txt"), 
+    col.names = c ("Stock","Country","Year","CatchCategory","ReportingCategory","CATONRaisedOrImported","MisreportedArea","Area","Season","SeasonType",
+                   "Fleet","CATON","Effort","UnitEffort","OfficialLandings","SampledOrEstimated","SampledCatch",
+                   "No. of Length Samples","No. of Length Measured","No. of Age Samples","No. Age Readings"),
+    sep="\t", 
+    skip=table1_start-1, 
+    nrows = table1_rows, 
+    header=FALSE) %>% 
+  lowcase() %>% 
+  filter(caton > 0)
+
+# This table shows ALL catch data WITH AGE OR LENGTH DATA
+t2 <- 
+  read.delim(
+    file=file.path(datapath, "CatchAndSampleDataTables.txt"), 
+    col.names = c ("Stock","Country","Year","CatchCategory","ReportingCategory","CATONRaisedOrImported","MisreportedArea","Area","Season",
+                   "SeasonType","Fleet","CATON","Effort","UnitEffort","OfficialLandings","SampledOrEstimated",
+                   "Sex","AgeOrLength","AgeOrLengthType","CANUM","WECA","LECA","SampledCatch",
+                   "No. of Length Samples","No. of Length Measured","No. of Age Samples","No. Age Readings"),
+    sep="\t", 
+    skip=table2_start-1, 
+    nrows = table2_rows, 
+    header=FALSE) %>% 
+  lowcase() %>% 
+  filter(canum > 0)
+
+# ---------------------------------------------------------------------------------
+# Overview of catch and sampling
+# ---------------------------------------------------------------------------------
+
+t1 %>% 
+  group_by(country, catchcategory, sampledorestimated) %>% 
+  summarize_at(c("caton", "nooflengthsamples", "nooflengthmeasured",
+            "noofagesamples", "noagereadings"), sum, na.rm = TRUE) %>% 
+  mutate(
+    caton                   = round(caton / 1000, digits=0),
+    noagereadings_kton      = round(noagereadings / (caton/1000), digits=0),
+    nooflengthmeasured_kton = round(nooflengthmeasured / (caton/1000), digits=0)
+  ) %>% 
+  gather(key="variable", value="data", caton:nooflengthmeasured_kton) %>%
+  dcast(catchcategory + sampledorestimated + country  ~ variable , 
+        value.var="data", sum, margins=c("catchcategory", "sampledorestimated")) %>% 
+  
+  group_by(catchcategory) %>%
+  do(add_row(., .after=0)) %>%
+  
+  writexl::write_xlsx(., path=file.path(datapath, "table1.xlsx"))
+
+  # pandoc.table(., 
+  #              style        = "simple",
+  #              split.tables = 200, 
+  #              # split.cells  = c(rep(7,10)),
+  #              justify      = "right",
+  #              missing      =" ",
+  #              big.mark     = ',', 
+  #              round        = c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0) )
+
+
+# ---------------------------------------------------------------------------------
+# Overview of age compositions
+# ---------------------------------------------------------------------------------
+
+t2 %>% 
+  mutate(area = substr(area, 1, 6)) %>% 
+  group_by(area, country, ageorlength, sampledorestimated) %>% 
+  summarize_at(c("canum"), sum, na.rm = TRUE) %>% 
+  mutate(canum = round(canum, digits=0)) %>% 
+  gather(key="variable", value="data", canum) %>%
+  dcast(area + sampledorestimated + ageorlength  ~ country , 
+        value.var="data", sum, margins=c("area", "sampledorestimated")) %>% 
+  
+  group_by(area) %>%
+  do(add_row(., .after=0)) %>%
+  
+  writexl::write_xlsx(., path=file.path(datapath, "table2.xlsx"))
+
+# pandoc.table(., 
+#              style        = "simple",
+#              split.tables = 200, 
+#              # split.cells  = c(rep(7,10)),
+#              justify      = "right",
+#              missing      =" ",
+#              big.mark     = ',', 
+#              round        = c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0) )
+
+
+```
+
+WD xx, WGDEEP 2022 
+
+**Overview of InterCatch files `r unique(t1$year)` for Greater argentine in 5b and 6a**
+
+`r folder`
+
+Martin Pastoors, `r format(Sys.time(), '%d/%m/%Y')`
+
+
+**Catch in tonnes by division**
+
+```{r, echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+
+t <-
+  t1 %>% 
+  mutate(area = substr(area, 1, 6)) %>% 
+  
+  group_by(year, area, country) %>% 
+  summarize_at(c("caton"), sum, na.rm = TRUE) %>%
+  mutate(caton = caton/1000) %>% 
+  filter(caton > 0) 
+  
+t %>% 
+  ggplot(aes(x=forcats::fct_reorder(country, caton), y=caton)) +
+  theme_publication() +
+  geom_bar(aes(fill=area), stat="identity") +
+  # geom_line(aes(colour=country)) +
+  coord_flip() +
+  labs(x="", y="tonnes", title=unique(t1$year))
+
+
+```
+
+\newpage
+
+**Sampled age distributions by division and country**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fig_nums(name = "sampleddistribution", 
+         level = 1, 
+         display = FALSE, 
+         caption = paste("Sampled distributions of Greater argentine in",unique(t2$year)))
+
+t <-
+  t2 %>% 
+  mutate(area = substr(area, 1, 6)) %>% 
+  
+  # filter(seasontype == "Year") %>% 
+  filter(ageorlengthtype    == "Age") %>%
+  filter(sampledorestimated == "Sampled_Distribution") %>% 
+  rename(age=ageorlength) %>% 
+  
+  group_by(year, area, season, fleet, country, sampledorestimated, age) %>% 
+  summarize_at(c("canum"), sum, na.rm = TRUE) %>%
+  
+  filter(canum > 0) %>% 
+  
+  group_by(year, area, season, fleet, country, sampledorestimated) %>% 
+  mutate(prop = canum/sum(canum, na.rm=TRUE)) %>% 
+  mutate(canum = round(canum, digits=0)) %>% 
+  tidyr::pivot_longer(names_to ="variable", values_to ="data", c(canum,prop))
+  # View()
+  
+# t %>% filter(age >= 25) %>% View()
+# t2 %>% filter(ageorlength >= 25, seasontype=="Quarter") %>% View()
+# t1 %>% filter(age >= 25) %>% View()
+
+t %>% 
+  filter(variable=="canum") %>% 
+  ggplot(aes(x=age, y=data)) +
+  theme_publication() +
+  geom_bar(aes(fill=country), stat="identity") +
+  # geom_line(aes(colour=country)) +
+  facet_grid(country~area)
+
+```
+
+_`r fig_nums("sampleddistribution")`_
+
+
+\newpage
+
+**Sampled age distributions by division and country**
+
+```{r, echo=FALSE, fig.asp=0.6, fig.align="center", message=FALSE, warning=FALSE}
+
+
+t <-
+  t2 %>% 
+  mutate(area = substr(area, 1, 6)) %>% 
+  
+  # filter(seasontype == "Year") %>% 
+  filter(ageorlengthtype    == "Age") %>%
+  rename(age=ageorlength) %>% 
+  
+  group_by(year, area, sampledorestimated, age) %>% 
+  summarize_at(c("canum"), sum, na.rm = TRUE) %>%
+  
+  filter(canum > 0) %>% 
+  
+  group_by(year, area, sampledorestimated) %>% 
+  mutate(prop = canum/sum(canum, na.rm=TRUE)) %>% 
+  mutate(canum = round(canum, digits=0)) %>% 
+  tidyr::pivot_longer(names_to ="variable", values_to ="data", c(canum,prop))
+  # View()
+  
+# t %>% filter(age >= 25) %>% View()
+# t2 %>% filter(ageorlength >= 25, seasontype=="Quarter") %>% View()
+# t1 %>% filter(age >= 25) %>% View()
+
+t %>% 
+  filter(variable=="canum") %>% 
+  ggplot(aes(x=age, y=data)) +
+  theme_publication() +
+  geom_bar(aes(fill=sampledorestimated), stat="identity") +
+  # geom_line(aes(colour=country)) +
+  facet_grid(.~area)
+
+```

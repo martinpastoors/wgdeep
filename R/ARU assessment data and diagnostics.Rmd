@@ -11,6 +11,7 @@ output:
 # 
 # 21/04/2020 First coding; adapted from WGWIDE code
 # 25/04/2021 Fully adapted to inclusion of plots for WGDEEP report
+# 22/04/2022 Adapted for WGDEEP 2022
 # =======================================================================================
 
 # devtools::install_github("fishfollower/SAM/stockassessment")
@@ -20,6 +21,8 @@ output:
 require("knitr")
 knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
 knitr::opts_chunk$set(fig.width=10) 
+
+options(dplyr.summarise.inform = FALSE)
 
 rm(list=ls())
 
@@ -31,215 +34,250 @@ library(RColorBrewer)
 library(viridis)
 library(pander)
 library(stockassessment)
+# devtools::install_github("shfischer/FLfse/FLfse")
+# library(FLfse)  # 
 library(ggrepel)
 
+# devtools::install_github("einarhjorleifsson/ggmisc")
+# library(ggmisc)     # e.g. crayola
+
 # devtools::install_github("einarhjorleifsson/readsam")
-library(readsam)
+# library(readsam)
 
 # lowcase function
 source("lowcase.r")
 source("theme_publication.r")
 source("sam_process_error.r")
-
-# Function to download fit from web to local computer
-getfitfromweb <- function(nam){
-  dir.create(file.path(nam))
-  download.file(file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs/user233",
-                          nam, "run","model.RData"), file.path(nam, "model.RData"))
-  load(file.path(nam, "model.RData"))
-  return(fit)
-  }
-# getfitfromweb(nam="WGDEEP_2020")
-
-getretrofromweb <- function(nam){
-  dir.create(file.path(nam))
-  download.file(file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs/user233",
-                          nam, "run","retro.RData"), file.path(nam, "retro.RData"))
-  load(file.path(nam, "retro.RData"))
-  return(RETRO)
-  }
+source("fix_forecast.r")
 
 
-getparsfromfit <- function(fit) {
-  # a  <- gsub("fit_", "", fit) 
-  df <- 
-    data.frame(stockassessment::partable(fit)) %>% 
-    add_rownames() %>%  
-    separate(rowname, into=c("parameter", "parnumber"), sep="_")
-  return(df)
+#' Function for extracting an object from a .RData file created by R's save() command
+#' Inputs: RData file, object name
+extract_from_rdata <- function(file, object) {
+  E <- new.env()
+  load(file=file, envir=E)
+  return(get(object, envir=E, inherits=F))
 }
 
-# getplotsfromweb <- function(nam){
-#   dir.create(file.path("res"))
-#   file.list <- list.filesfile.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs/user233",
-#                           nam, "run","model.RData"), 
-#   download.file(file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs/user233",
-#                           nam, "run","model.RData"), file.path(nam, "model.RData"))
-#   load(file.path(nam, "model.RData"))
-#   return(fit)
-#   }
-# getfitfromweb(nam="WGDEEP_2020")
+# Add units function
+addUnits <- function(n) {
+  labels <- dplyr::case_when(
+    n < 1000 ~ as.character(n),  # less than thousands
+    n < 1e6  ~ paste0(round(n/1e3), 'k'),  # in thousands
+    n < 1e9  ~ paste0(round(n/1e6), 'M'), # in millions
+    n < 1e12 ~ paste0(round(n/1e9), 'B'), # in billions
+    n < 1e15 ~ paste0(round(n/1e12), 'T'), # in trillions
+    TRUE     ~ 'too big!'
+  )
+  return(labels)
+}
 
-nam         <- "ARU.27.5b6a_WGDEEP_2021"
-# assessments <- c("ARU.27.5b6a_WGDEEP_2020_", "ARU.27.5b6a_WGDEEP_2021", "Aru.27.5b6a_wgdeep2021_trial_deepsurv")
-# assessments <- c("ARU.27.5b6a_WGDEEP_2021", "ARU.27.5b6a_WGDEEP_2021_DWalk")
-assessments <- c("ARU.27.5b6a_WGDEEP_2020_", "ARU.27.5b6a_WGDEEP_2021")
+
+nam         <- "ARU.27.5b6a_WGDEEP_2022"
+assessments <- c("ARU.27.5b6a_WGDEEP_2021", nam)
 user        <- "user233"
 web         <- TRUE
+filepath    <- file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs",
+                         user,
+                         nam,
+                         "run")
+configpath    <- file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs",
+                         user,
+                         nam,
+                         "conf")
+localpath   <- file.path("C:/temp")
 
-rp          <- data.frame(var      = c("fbar","ssb","ssb"),
+rp          <- data.frame(variable = c("fbar","ssb","ssb"),
                           refpoint = c("fmsy","blim","msybtrigger"),
-                          value    = c(0.2, 59730, 82999))
-# dir.create(file.path(nam))
-# fit1 <- getfitfromweb(assessments[[1]])
-# fit2 <- getfitfromweb(assessments[[2]])
-# identical(fit1, fit2)
+                          value    = c(0.24, 59730, 82999)) %>% 
+    mutate(variable = factor(variable, levels=c("ssb","fbar","rec")))
+
+
+# a <- assessments[[2]]
 
 # read input, results and parameter data
-ibya <- rbya <- rby <- pars <- pe_rby <- pe_rbya <- data.frame()
+
+# ibya <- rbya <- rby <- obscatch <- pars <- opr <- resosa <- loo_rby <- retro_rby <- tibble()
+# for (a in assessments) {
+#   print(a)
+# 
+#   # set filepath
+#   filepath    <- file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs",
+#                            user,
+#                            a,
+#                            "run")
+# 
+#   # Load assessment RData files
+#   # load(file=file.path(localpath, paste0(a, ".RData")))
+#   
+#   # fit
+#   assign(paste0("fit_", a),
+#          getfitfromweb(a))
+# 
+#   # flstock
+#   assign(paste0("flstock_", a),
+#          FLfse::SAM2FLStock(get(paste0("fit_", a))))
+# 
+#   #leaveout
+#   fil <- file.path(filepath, "leaveout.RData")
+#   if(RCurl::url.exists(fil)) {
+#     # assign the leaveout.RData file
+#     assign(paste0("loo_", a),
+#            extract_from_rdata(url(fil), "LO"))
+# 
+#   } else {
+#     # run the leave out analyse
+#     assign(paste0("loo_", a),
+#          stockassessment::leaveout(get(paste0("fit_", a))))
+#   }
+# 
+#   #retro
+#   fil <- file.path(filepath, "retro.RData")
+#   if(RCurl::url.exists(fil)) {
+#     # assign the RData file
+#     assign(paste0("retro_", a),
+#            extract_from_rdata(url(fil), "RETRO"))
+# 
+#   } else {
+#     # run the analysis
+#     assign(paste0("retro_", a),
+#          stockassessment::retro(get(paste0("fit_", a)), year=5))
+#   }
+# 
+#   # residuals                     # stockassessment:::procres(fit)
+#   fil <- file.path(filepath, "residuals.RData")
+#   if(RCurl::url.exists(fil)) {
+#     # assign the RData file
+#     assign(paste0("res_", a),
+#            extract_from_rdata(url(fil), "RES"))
+#     assign(paste0("procres_", a),
+#            extract_from_rdata(url(fil), "RESP"))
+# 
+#   } else {
+#     # run the analyses
+#     assign(paste0("res_", a),
+#          residuals(get(paste0("fit_", a))))
+#     assign(paste0("procres_", a),
+#          stockassessment::procres(get(paste0("fit_", a))))
+#   }
+# 
+#   #ibya
+#   assign(paste0("ibya_",a),
+#          mutate(fishvice::sam_ibya(getfitfromweb(a)), file=a))
+# 
+#   #observed catch
+#   assign(paste0("obscatch_",a),
+#          get(paste0("ibya_",a)) %>%
+#          mutate(est = oC * cW,
+#                 variable="catch") %>%
+#          group_by(year, variable, file) %>%
+#          summarise(est = sum(est, na.rm=TRUE)))
+# 
+#   # rbya
+#   assign(paste0("rbya_",a),
+#          mutate(fishvice::sam_rbya(get(paste0("fit_", a))), file=a) )
+# 
+#   # rby
+#   assign(paste0("rby_",a) ,
+#          mutate(fishvice::sam_rby(get(paste0("fit_", a))), file=a) )
+# 
+#   # opr
+#   assign(paste0("opr_",a) ,
+#          mutate(fishvice:::sam_opr(get(paste0("fit_", a))), file=a) )
+# 
+#   # parameters
+#   assign(paste0("pars_",a) ,
+#          mutate(fishvice:::sam_partable(get(paste0("fit_", a))), file=a) )
+# 
+#   # resosa
+#   assign(paste0("resosa_",a) ,
+#          mutate(fishvice:::sam_one_observation_ahead_residuals(get(paste0("res_", a))), file=a) )
+# 
+#   # retro_rby
+#   assign(paste0("retro_rby_", a),
+#          get(paste0("rby_", a)) %>%  mutate(finalyear = max(get(paste0("rby_", a))$year)))
+#   for (i in 1:length(get(paste0("retro_", a)))) {
+#     assign(paste0("retro_rby_", a),
+#        bind_rows(
+#          get(paste0("retro_rby_", a)),
+#          fishvice::sam_rby(get(paste0("retro_", a))[[i]]) %>%
+#            mutate(finalyear = max(get(paste0("retro_", a))[[i]]$data$years))
+#          )
+#        )
+#   }
+# 
+#   # loo_rby
+#   assign(paste0("loo_rby_", a), tibble())
+#   # i <- names(get(paste0("loo_", a)))[1]
+#   for (i in names(get(paste0("loo_", a)))) {
+#     assign(paste0("loo_rby_", a),
+#        bind_rows(
+#          get(paste0("loo_rby_", a)),
+#          fishvice::sam_rby(get(paste0("loo_", a))[[i]]) %>%
+#            mutate(leftout = i)
+#          )
+#        )
+#   }
+# 
+#   # to do: process error
+# 
+#   # bind together
+#   ibya     <- bind_rows(ibya, get(paste0("ibya_",a)))
+#   rbya     <- bind_rows(rbya, get(paste0("rbya_",a)))
+#   rby      <- bind_rows(rby, get(paste0("rby_",a)))
+#   obscatch <- bind_rows(obscatch, get(paste0("obscatch_",a)))
+#   pars     <- bind_rows(pars, get(paste0("pars_",a)))
+#   opr      <- bind_rows(opr, get(paste0("opr_",a)))
+#   resosa   <- bind_rows(opr, get(paste0("opr_",a)))
+#   retro_rby  <- bind_rows(retro_rby, get(paste0("retro_rby_",a)) %>% mutate(file=a))
+#   loo_rby  <- bind_rows(loo_rby, get(paste0("loo_rby_",a)) %>% mutate(file=a))
+# 
+#   save(
+#     list=as.character(
+#       c(
+#         paste0("fit_",a),
+#         paste0("flstock_",a),
+#         paste0("loo_",a),
+#         paste0("retro_",a),
+#         paste0("res_",a),
+#         paste0("procres_",a),
+#         paste0("ibya_",a),
+#         paste0("rbya_",a),
+#         paste0("rby_",a),
+#         paste0("obscatch_",a),
+#         paste0("pars_",a),
+#         paste0("opr_",a),
+#         paste0("resosa_",a),
+#         paste0("retro_rby_",a),
+#         paste0("loo_rby_",a)
+#     )),
+#     file=file.path(localpath, paste0(a, ".RData"))
+#   )
+# 
+# }
+
+
+# Load assessment RData files
 for (a in assessments) {
-  print(a)
-  assign(paste0("fit_", a), getfitfromweb(a))  
-  assign(paste0("ibya_",a), mutate(readsam::read_ibya(a, web = web, user = user), file=a))  
-  assign(paste0("rbya_",a), mutate(readsam::read_rbya_sam(get(paste0("fit_", a)), get(paste0("ibya_",a))), file=a) )  
-  assign(paste0("rby_",a) , mutate(readsam::read_rby_sam(get(paste0("fit_", a)), get(paste0("ibya_",a))), file=a) )
-  assign(paste0("pars_",a), mutate(getparsfromfit(get(paste0("fit_", a))), file=a)) 
-  t <- sam_process_error(get(paste0("rbya_",a)),plus_group = TRUE, plot_it=FALSE)
-  assign(paste0("pe_rbya_",a), mutate(t[[1]], file=a)) 
-  assign(paste0("pe_rby_",a), mutate(t[[2]], file=a)) 
-  
-  ibya <- bind_rows(ibya, get(paste0("ibya_",a)))
-  rbya <- bind_rows(rbya, get(paste0("rbya_",a)))
-  rby  <- bind_rows(rby, get(paste0("rby_",a)))
-  pars <- bind_rows(pars, get(paste0("pars_",a)))
-  pe_rbya <- bind_rows(pe_rbya, get(paste0("pe_rbya_",a)))
-  pe_rby  <- bind_rows(pe_rby, get(paste0("pe_rby_",a)))
+  load(
+    file=file.path(localpath, paste0(a, ".RData"))
+  )
 }
 
-# identical(fit_ARU.27.5b6a_WGDEEP_2020_, fit_ARU.27.5b6a_WGDEEP_2021)
-
-pars <- 
-  pars %>% 
-  mutate(parnumber = factor(parnumber, levels=unique(.$parnumber))) %>% 
-  lowcase()
-
-# url        <- paste("https://www.stockassessment.org/datadisk/stockassessment/userdirs",user,"/",nam,"/data/", sep="")  
-# filestoget <- c("survey.dat")
-# d          <- lapply(filestoget, function(f)download.file(paste(url,f,sep=""), f))
-
-fleetnames <-
-  bind_rows(
-    data.frame(fleetname="catch", stringsAsFactors = FALSE),
-    as.data.frame(names(FLCore::readFLIndices("survey.dat"))) %>% setNames("fleetname"),
-    
-  ) %>% 
-  mutate(fleet = as.character(row_number())) %>% 
-  mutate(fleetname  = gsub(" ","", fleetname)) %>% 
-  mutate(fleetname2 = substr(fleetname, 1, 12))
-
-fit  <- fit_ARU.27.5b6a_WGDEEP_2021
-retro <- getretrofromweb(nam)
-conf <- fit$conf
-sd   <- fit$pl
-data <- fit$data
-
-ages   <- conf$minAge:conf$maxAge
-fleets <- 1:nrow(conf$keyLogFsta)
-years  <- data$years
-nr     <- nrow(conf$keyLogFsta)
-nc     <- ncol(conf$keyLogFsta)
-
-t1 <- 
-  as.data.frame(conf$keyLogFpar) %>% 
-  rownames_to_column(var="fleet") %>% 
-  pivot_longer(names_to="test", values_to="parnumber", cols=1:nc+1) %>% 
-  bind_cols(age=rep(ages, nr)) %>% 
-  filter(parnumber != -1) %>% 
-  group_by(parnumber, fleet) %>% 
-  summarise(ages = paste(age, collapse="_")) %>% 
-  ungroup() %>% 
-  distinct(parnumber, fleet, ages) %>% 
-  mutate(partype = "LogFpar") %>% 
-  left_join(fleetnames, by="fleet") %>% 
-  mutate(parname = paste(fleetname2, ages))
-
-t2 <- 
-  as.data.frame(conf$keyVarObs) %>% 
-  rownames_to_column(var="fleet") %>% 
-  pivot_longer(names_to="test", values_to="parnumber", cols=1:nc+1) %>% 
-  bind_cols(age=rep(ages, nr)) %>% 
-  filter(parnumber != -1) %>% 
-  group_by(parnumber, fleet) %>% 
-  summarise(ages = paste(age, collapse="_")) %>% 
-  ungroup() %>% 
-  distinct(parnumber, fleet, ages) %>% 
-  mutate(partype = "sdLogObs") %>% 
-  left_join(fleetnames, by="fleet") %>% 
-  mutate(parname = paste(fleetname2, ages))
-
-t3 <- 
-  as.data.frame(conf$keyVarObs) %>% 
-  rownames_to_column(var="fleet") %>% 
-  pivot_longer(names_to="test", values_to="parnumber", cols=1:nc+1) 
-
-# "sdrep" parameter estimates TMB report
-# "pl"    parameter list
-# "plsd"  sd parameter estimates
-# "data"  data
-# "conf"  configuration
-# "opt"   optimization
-# "obj"   likelihood object
-# "rep"   additional report
-# "low"   limit for parameters
-# "hig"   limit for parameters
-
-# Generating a data frame with names in the fit list
-l1 <- l2 <- l3 <- data.frame(stringsAsFactors = FALSE)
-count <- 0
-l1 <- as.data.frame(names(fit)) 
-for (i in 1:nrow(l1)) {
-  l2 <- bind_rows(l2, data.frame(level2 = names(fit[[i]]), level1 = l1[i,1]))
-  for (j in 1:length(fit[[i]])) {
-    count <- count + 1
-    print(paste(i,j,count,sep=" / "))
-    if(!is.null(names(fit[[i]][[j]]))) {
-      print(unique(names(fit[[i]][[j]])))
-      l3 <- bind_rows(l3, data.frame(level3 = unique(names(fit[[i]][[j]])), level2 = l2[count,1], level1 = l1[i,1]))
-    } else {
-      print(unique(names(fit[[i]][[j]])))
-      l3 <- bind_rows(l3, data.frame(level2 = l2[count,1], level1 = l1[i,1]))
-    }
-  }
-}
-
-l3 <- l3 %>% dplyr::select(level1, level2, level3)
-
-
-sam2rby <- function (fit) {
-    pY <- stockassessment::catchtable(fit) %>% as.data.frame() %>% 
-        dplyr::bind_cols(year=as.integer(fit$data$years)) %>% dplyr::mutate(variable = "catch")
-    rec <- stockassessment::rectable(fit) %>% as.data.frame() %>% 
-        dplyr::mutate(year = rownames(.) %>% as.integer(), variable = "rec")
-    ssb <- stockassessment::ssbtable(fit) %>% as.data.frame() %>% 
-        dplyr::mutate(year = rownames(.) %>% as.integer(), variable = "ssb")
-    tsb <- stockassessment::tsbtable(fit) %>% as.data.frame() %>% 
-        dplyr::mutate(year = rownames(.) %>% as.integer(), variable = "tsb")
-    fbar <- stockassessment::fbartable(fit) %>% as.data.frame() %>% 
-        dplyr::mutate(year = rownames(.) %>% as.integer(), variable = "fbar")
-    pY %>% dplyr::bind_rows(rec) %>% dplyr::bind_rows(ssb) %>% 
-        dplyr::bind_rows(tsb) %>% dplyr::bind_rows(fbar) %>% 
-        dplyr::mutate(ly = max(fit$data$years)) %>% 
-        dplyr::as_tibble()
-}
-
-df_retro <- sam2rby(fit)
-for (i in 1:length(retro)) {
-  print(i)
-  df_retro <-
-    bind_rows(
-      df_retro,
-      sam2rby(retro[[i]])
-    )
+# combine overall assessment results
+ibya <- rbya <- rby <- obscatch <- pars <- opr <- resosa <- loo_rby <- retro_rby <- tibble()
+for (a in assessments) {
+  ibya     <- bind_rows(ibya, get(paste0("ibya_",a)))
+  rbya     <- bind_rows(rbya, get(paste0("rbya_",a)))
+  rby      <- bind_rows(rby, get(paste0("rby_",a)))
+  obscatch <- bind_rows(obscatch, get(paste0("obscatch_",a)))
+  pars     <- bind_rows(pars, get(paste0("pars_",a)))
+  opr      <- bind_rows(opr, get(paste0("opr_",a)))
+  resosa   <- bind_rows(opr, get(paste0("opr_",a)))
+  retro_rby<- bind_rows(retro_rby, 
+                        get(paste0("retro_rby_",a)) %>% mutate(file=a))
+  loo_rby  <- bind_rows(loo_rby, 
+                        get(paste0("loo_rby_",a)) %>% mutate(file=a))
 }
 
 
@@ -255,39 +293,65 @@ Martin Pastoors, `r format(Sys.time(), '%d/%m/%Y')`
 
 ```{r, echo=FALSE, fig.asp=1.3, fig.align="center", message=FALSE, warning=FALSE}
 
-t <-
-  rbya %>% 
-  filter(file==nam) %>%
-  filter(oC != -1) %>% 
+# t <-
+#   rbya %>% 
+#   filter(file==nam) %>%
+#   filter(oC != -1) %>% 
+# 
+#   complete(file, year, age) %>% 
+#   group_by(file, year, age) %>% 
+#   summarise(oC = sum(oC, na.rm=TRUE)) %>% 
+#   group_by(file, age) %>% 
+#   mutate(value = oC/mean(oC, na.rm=TRUE)) %>% 
+#   mutate(yc = year - age) %>% 
+#   data.frame()
 
-  complete(file, year, age) %>% 
-  group_by(file, year, age) %>% 
-  summarise(oC = sum(oC, na.rm=TRUE)) %>% 
-  group_by(file, age) %>% 
+t <-
+  opr %>% 
+  filter(file==nam) %>%
+  filter(!is.na(age)) %>% 
+
+  complete(file, fleet, year, age) %>% 
+  group_by(file, fleet, year, age) %>% 
+  summarise(oC = sum(exp(o), na.rm=TRUE)) %>% 
+  group_by(file, fleet, age) %>% 
   mutate(value = oC/mean(oC, na.rm=TRUE)) %>% 
   mutate(yc = year - age) %>% 
   data.frame()
   
-t %>% 
-  ggplot() +
-  theme_bw() +
-  theme(legend.position = "none") +
-  theme(axis.text.y     = element_blank()) +
-  theme(panel.border    = element_rect(colour="black" , size=0.1)) +
-  theme(axis.ticks.y    = element_blank() ) +
-  theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
-  theme(panel.spacing   = unit(0.2, "lines")) +
-  theme(plot.margin=unit(c(0,0,0,0),"mm")) +
-  geom_col(aes(year, value, fill = factor(yc))) + 
-  ggmisc::scale_fill_crayola() +
-  scale_x_continuous(breaks=seq(min(t$year), max(t$year), 1)) +
-  labs(x = NULL, y = NULL, title=NULL) +
-  facet_grid(age ~ file, scale = "free_y", switch = "y")
+for (i in 1:length(unique(t$fleet))) {
+  assign(paste0("p", i),
+         t %>% 
+           filter(fleet == sort(unique(t$fleet))[i]) %>% 
+          
+           ggplot() +
+           theme_bw() +
+           theme(legend.position = "none") +
+           theme(axis.text.y     = element_blank()) +
+           theme(panel.border    = element_rect(colour="black" , size=0.1)) +
+           theme(axis.ticks.y    = element_blank() ) +
+           theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+           theme(panel.spacing   = unit(0.2, "lines")) +
+           theme(plot.margin=unit(c(0,0,0,0),"mm")) +
+           geom_col(aes(year, value, fill = factor(yc))) + 
+           ggmisc::scale_fill_crayola() +
+           scale_x_continuous(breaks=seq(min(t$year), max(t$year), 1)) +
+           labs(x = NULL, y = NULL, title=NULL) +
+           facet_grid(age ~ fleet, scale = "free_y", switch = "y") 
+      )
+  
+}
+
+print(cowplot::plot_grid(p1, p2, p3,
+                   nrow=1, scale=0.98, align="hv",
+                   rel_heights = c(1.5, 1.5, 1.5, 1.5)))
+
+
 
 ```
 
 
-##### page break
+\newpage
 
 **Catch weights**
 
@@ -302,7 +366,7 @@ t <-
 tt <-
   t %>% 
   group_by(file, age) %>% 
-  filter(row_number() == n())
+  slice_tail(n=1)
 
 t %>%   
   ggplot(aes(x=year, y=cW, group=age)) +
@@ -314,6 +378,7 @@ t %>%
                            hjust=0, direction="y", nudge_x = 1, segment_size=0.4, force=0.2,
                            segment.colour="gray", box.padding = 0.5, min.segment.length = 0 ) +
   scale_x_continuous(expand = expansion(mult = c(0.02 , 0.1))) +
+  labs(x="", y="cW (gr)") +
   expand_limits(y=0) 
 
 t %>%   
@@ -325,125 +390,145 @@ t %>%
   geom_line(aes(colour=as.character(age))) +
   expand_limits(y=0) +
   scale_x_continuous(breaks=scales::pretty_breaks()) +
-  labs(x="") +
+  labs(x="", y="cW (gr)") +
   facet_wrap(~age, scales="free_y")
 
 ```
 
-##### page break
+\newpage
 
+**fit the assessment**
 
-**Diagnostics**
+```{r, echo=FALSE, fig.asp=0.9, fig.align="center", message=FALSE, warning=FALSE}
 
-```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+# # data
+# fil <- file.path(filepath, "data.RData")
+# if(RCurl::url.exists(fil)) {
+#   load(url(fil))
+# }
+# 
+# # config
+# fil <- file.path(configpath, "model.cfg")
+# if(RCurl::url.exists(fil)) {
+#   conf <- loadConf(dat, url(fil), patch=TRUE)
+# }
+# 
+# par<-defpar(dat,conf)
+# 
+# par$logSdLogN<-c(0,log(0.01))
+# fit1<-sam.fit(dat,conf,par, map=list(logSdLogN=factor(c(1,NA))))
+# if(fit1$opt$convergence!=0) stop("Model did not converge.")
+# rby1 <- fishvice::sam_rby(fit1) %>% mutate(model="1")
+# 
+# par$logSdLogN<-c(0,log(0.0001))
+# fit2<-sam.fit(dat,conf,par, map=list(logSdLogN=factor(c(1,NA))))
+# if(fit2$opt$convergence!=0) stop("Model did not converge.")
+# rby2 <- fishvice::sam_rby(fit2) %>% mutate(model="2")
 
-# generate plots for observations and predictions
+# save(dat, conf, fit1, rby1, fit2, rby2, file=file.path(localpath, "rerun.RData"))
+load(file=file.path(localpath, "rerun.RData"))
 
-fleets <- unique(fit$data$aux[, "fleet"])
-idx <- fit$data$aux[, "fleet"] %in% fleets
-
-t <- 
-  data.frame(
-    age   = fit$data$aux[idx, "age"],
-    fleet = as.character(fit$data$aux[idx, "fleet"]),
-    year  = fit$data$aux[idx, "year"],
-    obs   = fit$data$logobs[idx],
-    pred  = fit$rep$predObs[idx]
-  ) %>% 
-  mutate(res   = obs-pred) %>%
-  # mutate(age   = ifelse(age=="-1","all",age)) %>%
-  left_join(fleetnames, by="fleet") %>% 
-  filter(fleet %in% c(1:5)) 
-
-# forcats::fct_reorder(t$fleetname2, t$fleet, min)
-# is.factor(t$fleetname2)
-# is.ordered(t$fleetname2)
-
-plist <- list()
-ncol  <- 5
-
-for (i in 1:3) {
-  plist[[i]] <-
-    t %>%
-    filter(fleet == i) %>% 
-    ggplot(aes(x=year, y=obs)) +
-      theme_publication() +
-      geom_point() +
-      geom_line(aes(y=pred)) +
-      scale_x_continuous(limits=c(min(years), max(years)), breaks=scales::pretty_breaks(n=3)) +
-      labs(x="", y="obs/pred", title=fleetnames[i,3]) +
-      facet_wrap(~age, scale="free_y", ncol=ncol)
-  
-  fn   <- filter(t, fleet==i) %>% distinct(fleetname2) %>% as.character()
-  nage <- filter(t, fleet==i) %>% distinct(age) %>% nrow()
-  w    <- 10
-  h    <- w / ncol * ceiling(nage / ncol)  
-  
-  # save
-  tiff(paste0(nam,fn,"obs-pred.tiff"), units="in", width=w, height=h, res=300)
-  print(plist[[i]])
-  dev.off()
-
-  ggsave(paste0(nam,fn,"obs-pred.jpg"), device="jpeg", width=w, height=h)
-  
-}
-
-# biomass indices
-plist[[4]] <-
-  t %>%
-  filter(fleet %in% c(4,5)) %>% 
-  ggplot(aes(x=year, y=obs)) +
-    theme_publication() +
-    geom_point() +
-    geom_line(aes(y=pred)) +
-    scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
-    labs(x="", y="obs/pred", title=paste(fleetnames[4,1], fleetnames[5,1])) +
-    facet_wrap(~fleetname2, scale="free_y", ncol=5)
-
-  fn   <- filter(t, fleet %in% c(4,5)) %>% distinct(fleetname2) %>% 
-    summarise(f = paste(fleetname2, collapse=" ")) %>% as.character()
-  nage <- 2
-  w    <- 10
-  h    <- w / nage * ceiling(nage / ncol)  
-  
-  # save
-  tiff(paste0(nam,fn,"obs-pred.tiff"), units="in", width=w, height=h, res=300)
-  print(plist[[4]])
-  dev.off()
-
-  ggsave(paste0(nam,fn,"obs-pred.jpg"), device="jpeg", width=w, height=h)
+bind_rows(rby1, rby2) %>% 
+  # filter(variable == "ssb") %>% 
+  ggplot(aes(x=year, y=est, colour=model)) +
+  geom_line() +
+  geom_ribbon(aes(xmin = year, xmax=year, ymin=low, ymax=high, fill=model), alpha=0.4) +
+  facet_wrap(~variable, scales="free_y")
 
 
 ```
-```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+\newpage
+
+**Observed and predicted (logscale): catch**
+
+```{r, echo=FALSE, fig.asp=0.9, fig.align="center", message=FALSE, warning=FALSE}
 
 # generate plots for observations and predictions
 
-fleets <- unique(fit$data$aux[, "fleet"])
-idx <- fit$data$aux[, "fleet"] %in% fleets
+t <-
+  opr %>%
+  filter(file==nam) %>% 
+  rename(obs=o, pred=p) 
 
-t <- 
-  data.frame(
-    age   = fit$data$aux[idx, "age"],
-    fleet = as.character(fit$data$aux[idx, "fleet"]),
-    year  = fit$data$aux[idx, "year"],
-    obs   = fit$data$logobs[idx],
-    pred  = fit$rep$predObs[idx]
-  ) %>% 
-  mutate(res   = obs-pred) %>%
-  # mutate(age   = ifelse(age=="-1","all",age)) %>%
-  left_join(fleetnames, by="fleet") %>% 
-  filter(fleet %in% c(1:5)) 
+t1 <- t %>% filter(!is.na(age)) %>% distinct(fleet)
+t2 <- t %>% filter(is.na(age)) %>% distinct(fleet)
 
-# forcats::fct_reorder(t$fleetname2, t$fleet, min)
-# is.factor(t$fleetname2)
-# is.ordered(t$fleetname2)
+# age based residuals
+# f <- t1$fleet[1]
+for (f in t1$fleet) {
+  p <-
+    t %>% 
+    filter(fleet == f) %>% 
+    
+    ggplot(aes(x=year, y=obs)) +
+    theme_publication() +
+    geom_point(colour="red", shape=21) +
+    geom_line(aes(y=pred), colour="black") +
+    # scale_y_continuous(limits = c(-max(abs(t$res), na.rm=TRUE), max(abs(t$res), na.rm=TRUE))) +
+    scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+    labs(title=f, x="", y="log") +
+    facet_wrap(~age, ncol=5)
+  
+  print(p)
+  
+}
+
+# biomass residuals
+t %>% 
+  filter(fleet %in% t2$fleet) %>% 
+  mutate(age = "biomass") %>% 
+
+  ggplot(aes(x=year, y=obs)) +
+  theme_publication() +
+  geom_point(colour="red", shape=21) +
+  geom_line(aes(y=pred), colour="black") +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+  labs(x="", y="log") +
+  facet_wrap(~fleet, nrow=1, scales="free_y")
+  
 
 
-t %>%
-  filter(fleet %in% c(1:5)) %>%
-  # mutate(fleetname2 = factor(fleetname2)) %>% 
-  # mutate(fleetname2 = forcats::fct_reorder(fleetname2, sort(fleet))) %>% 
+```
+\newpage
+
+**Residuals**
+
+```{r, echo=FALSE, fig.asp=0.9, fig.align="center", message=FALSE, warning=FALSE}
+
+# generate plots for simple residuals
+
+t <-
+  opr %>%
+  filter(file==nam) %>% 
+  mutate(res = o - p)
+
+t1 <- t %>% filter(!is.na(age)) %>% distinct(fleet)
+t2 <- t %>% filter(is.na(age)) %>% distinct(fleet)
+
+for (f in t1$fleet) {
+  p <-
+    t %>% 
+    filter(fleet == f) %>% 
+    
+    ggplot(aes(x=year, y=res)) +
+    theme_publication() +
+  geom_hline(yintercept=0) +
+  geom_segment(aes(x=year, xend=year, yend=res, y=0)) +
+  geom_point(fill="white", shape=21) +
+  scale_y_continuous(limits = c(-max(abs(t$res), na.rm=TRUE), max(abs(t$res), na.rm=TRUE))) +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+    labs(title=f, x="", y="log") +
+    facet_wrap(~age, ncol=5)
+  
+  print(p)
+  
+}
+
+# biomass residuals
+t %>% 
+  filter(fleet %in% t2$fleet) %>% 
+  mutate(age = "biomass") %>% 
 
   ggplot(aes(x=year, y=res)) +
   theme_publication() +
@@ -452,27 +537,68 @@ t %>%
   geom_point(fill="white", shape=21) +
   scale_y_continuous(limits = c(-max(abs(t$res), na.rm=TRUE), max(abs(t$res), na.rm=TRUE))) +
   scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
-  facet_grid(forcats::fct_reorder(fleetname2, fleet)~age)
-
+  labs(x="", y="log") +
+  facet_wrap(~fleet, nrow=1, scales="free_y")
 
 
 ```
 
+\newpage
+
+**One step ahead residuals**
+
+```{r echo=FALSE, fig.align="center", fig.asp=1.2, message=FALSE, warning=FALSE}
+
+plot(get(paste0("res_", assessments[2])))
+
+```
+\newpage
+
+**Process residuals**
+
+```{r echo=FALSE, fig.align="center", fig.asp=0.8, message=FALSE, warning=FALSE}
+
+plot(get(paste0("procres_", assessments[2])))
+
+```
+
+\newpage
+
 **Parameter estimates**
 
-```{r, echo=FALSE, fig.asp=1.2, fig.align="center", message=FALSE, warning=FALSE}
+```{r echo=FALSE, fig.align="center", fig.asp=1.2, message=FALSE, warning=FALSE}
+
+# **Parameter estimates**
 
 plist <- list()
 
-# table
-pars %>% 
+getparsfromfit <- function(fit) {
+  # a  <- gsub("fit_", "", fit) 
+  df <- 
+    data.frame(stockassessment::partable(fit)) %>% 
+    add_rownames() %>%  
+    separate(rowname, into=c("parameter", "parnumber"), sep="_")
+  return(df)
+}
+
+pars2 <- tibble()
+for (a in assessments) {
+  assign(paste0("pars2_",a), mutate(getparsfromfit(get(paste0("fit_", a))), file=a))  
+  pars2 <- 
+    bind_rows(
+      pars2, 
+      get(paste0("pars2_",a)) %>% mutate(parnumber = factor(parnumber, levels=unique(.$parnumber))) %>% lowcase())
+}
+ 
+
+pars2 %>% 
   filter(file==nam) %>% 
   dplyr::select(-file) %>% 
   pander::pandoc.table(.,style = "simple",split.tables=120, justify = "right",missing=".")
 
 # plot
 plist[[1]] <-
-  pars %>% 
+  pars2 %>% 
   filter(tolower(parameter) %in% c("logfpar", "logsdlogfsta","logsdlogn", "logsdlogobs","transfirardist")) %>%
 
   ggplot(aes(x=parnumber, y=exppar, group=file)) +
@@ -480,28 +606,84 @@ plist[[1]] <-
   theme_publication() +
   theme(legend.title=element_blank()) +
   theme(legend.position="none") +
-  theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  # theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(strip.text.y.right = element_text(angle = 0)) +
   theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
   
   geom_bar(aes(fill=file), stat="identity", position="dodge") +
   geom_errorbar(aes(ymin=low, ymax=high, colour=file, group=file), position=position_dodge()) +
   geom_point(aes(colour=file), position=position_dodge(0.9)) +
   scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
-  # coord_flip()+
-  # facet_grid(.~parameter, scales="free",space = "free")
-  labs(x="",y="") +
   coord_flip()+
+  labs(x="",y="") +
   facet_grid(parameter~., scales="free",space = "free")
 
 plist[[2]] <-
-  pars %>% 
+  pars2 %>%
   filter(tolower(parameter) %in% c("itrans")) %>%
 
   ggplot(aes(x=parnumber, y=exppar, group=file)) +
   
   theme_publication() +
   theme(legend.title=element_blank()) +
-  theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(legend.position="none") +
+  # theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(strip.text.y.right = element_text(angle = 0)) +
+  theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
+  
+  geom_bar(aes(fill=file), stat="identity", position="dodge") +
+  geom_errorbar(aes(ymin=low, ymax=high, colour=file, group=file), position=position_dodge()) +
+  geom_point(aes(colour=file), position=position_dodge(0.9)) +
+  scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
+  coord_flip()+
+  labs(x="",y="") +
+  facet_grid(parameter~., scales="free",space = "free")
+
+# plist[[2]] <-
+#   pars2 %>%
+#   filter(tolower(parameter) %in% c("itrans")) %>%
+# 
+#   ggplot(aes(x=parnumber, y=exppar, group=file)) +
+# 
+#   theme_publication() +
+#   theme(legend.title=element_blank()) +
+#   theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+#   theme(strip.text.y.right = element_text(angle = 0)) +
+#   theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
+# 
+#   geom_bar(aes(fill=file), stat="identity", position="dodge") +
+#   geom_errorbar(aes(ymin=low, ymax=high, colour=file, group=file), position=position_dodge()) +
+#   geom_point(aes(colour=file), position=position_dodge(0.9)) +
+#   scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
+#   # coord_flip()+
+#   # facet_grid(.~parameter, scales="free",space = "free")
+#   labs(x="",y="") +
+#   coord_flip()+
+#   facet_grid(parameter~., scales="free",space = "free")
+
+print(patchwork::wrap_plots(plist) +
+  patchwork::plot_layout(ncol = 1, heights = c(0.92, 0.08)) +
+  patchwork::plot_annotation() & theme(plot.tag = element_text(size = 8)))
+
+```
+
+\newpage
+
+**Parameter estimates (by fleet)**
+
+```{r echo=FALSE, fig.align="center", fig.asp=1.2, message=FALSE, warning=FALSE}
+
+# **Parameter estimates**
+
+pars %>% 
+  mutate(fleet = ifelse(grepl("Combine", fleet), "Faroe-EU CPUE", fleet)) %>% 
+  ggplot(aes(x=age, y=est)) +
+  
+  theme_publication() +
+  theme(legend.title=element_blank()) +
+  theme(legend.position="none") +
+  # theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(strip.text.y.right = element_text(angle = 0)) +
   theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
   
   geom_bar(aes(fill=file), stat="identity", position="dodge") +
@@ -509,47 +691,41 @@ plist[[2]] <-
   geom_point(aes(colour=file), position=position_dodge(0.9)) +
   scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
   # coord_flip()+
-  # facet_grid(.~parameter, scales="free",space = "free")
   labs(x="",y="") +
+  facet_grid(what~fleet, scales="free_y")
+
+plist[[2]] <-
+  pars2 %>%
+  filter(tolower(parameter) %in% c("itrans")) %>%
+
+  ggplot(aes(x=parnumber, y=exppar, group=file)) +
+  
+  theme_publication() +
+  theme(legend.title=element_blank()) +
+  theme(legend.position="none") +
+  # theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(strip.text.y.right = element_text(angle = 0)) +
+  theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
+  
+  geom_bar(aes(fill=file), stat="identity", position="dodge") +
+  geom_errorbar(aes(ymin=low, ymax=high, colour=file, group=file), position=position_dodge()) +
+  geom_point(aes(colour=file), position=position_dodge(0.9)) +
+  scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
   coord_flip()+
+  labs(x="",y="") +
   facet_grid(parameter~., scales="free",space = "free")
 
-print(patchwork::wrap_plots(plist) + 
+print(patchwork::wrap_plots(plist) +
   patchwork::plot_layout(ncol = 1, heights = c(0.92, 0.08)) +
   patchwork::plot_annotation() & theme(plot.tag = element_text(size = 8)))
+
 ```
 
+\newpage
 
-##### page break
+**Comparisons of the Assessments**
 
-**Summary of the Assessments**
-
-```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
-
-addUnits <- function(n) {
-  labels <- ifelse(n < 1000, n,  # less than thousands
-                   ifelse(n < 1e6, paste0(round(n/1e3), 'k'),  # in thousands
-                          ifelse(n < 1e9, paste0(round(n/1e6), 'M'),  # in millions
-                                 ifelse(n < 1e12, paste0(round(n/1e9), 'B'), # in billions
-                                        ifelse(n < 1e15, paste0(round(n/1e12), 'T'), # in trillions
-                                               'too big!'
-                                        )))))
-  return(labels)
-}
-
-# observed catch in tonnes
-ct <- 
-  read.table("ct.dat", skip=5) %>% 
-  as.data.frame() %>%
-  setNames("estimate") %>% 
-  mutate(
-    estimate   = as.numeric(estimate),
-    source="intercatch",
-    variable   = "catch", 
-  ) %>% 
-  bind_cols(year=fit$data$years) %>% 
-  mutate(year  = as.numeric(year))
-
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
 
 # plot of trend by variable
 rby %>% 
@@ -558,14 +734,14 @@ rby %>%
   mutate(variable = factor(variable, levels=c("catch", "ssb","fbar","rec"))) %>% 
   mutate(year = ifelse(year < 1000, year+1994, year)) %>% 
   
-  ggplot(aes(x=year,y=Estimate, group=file)) +
+  ggplot(aes(x=year,y=est, group=file)) +
   theme_publication() +
   theme(legend.title=element_blank()) +
-  geom_ribbon(aes(ymin=Low, ymax=High, fill=file), alpha=0.3) +
+  geom_ribbon(aes(ymin=low, ymax=high, fill=file), alpha=0.3) +
   geom_line(aes(colour=file)) +
   geom_point(aes(colour=file)) +
   
-  geom_point(data=ct, aes(x=year,y=estimate), inherit.aes = FALSE, shape=3) +
+  geom_point(data=obscatch, aes(x=year,y=est), inherit.aes = FALSE, shape=3) +
   
   scale_y_continuous(labels = addUnits) +
   expand_limits(y=0) +
@@ -577,37 +753,27 @@ rby %>%
 
 ```
 
-**Retro of the Assessments**
+\newpage
 
-```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+**Summary of the assessment**
 
-addUnits <- function(n) {
-  labels <- ifelse(n < 1000, n,  # less than thousands
-                   ifelse(n < 1e6, paste0(round(n/1e3), 'k'),  # in thousands
-                          ifelse(n < 1e9, paste0(round(n/1e6), 'M'),  # in millions
-                                 ifelse(n < 1e12, paste0(round(n/1e9), 'B'), # in billions
-                                        ifelse(n < 1e15, paste0(round(n/1e12), 'T'), # in trillions
-                                               'too big!'
-                                        )))))
-  return(labels)
-}
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
 
-df_retro <-
-  df_retro %>% 
-  filter(variable %in% c("ssb","fbar","rec")) %>% 
-  mutate(variable = factor(variable, levels=c("ssb","fbar","rec"))) 
 
 # plot of trend by variable
-df_retro %>% 
-
-  ggplot(aes(x=year,y=Estimate, group=ly)) +
+rby %>% 
+  filter(file %in% assessments[2]) %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec"))) %>% 
+  
+  ggplot(aes(x=year,y=est, group=file)) +
   theme_publication() +
-  theme(legend.position = "none") +
   theme(legend.title=element_blank()) +
-  geom_ribbon(data=filter(df_retro, ly == max(ly), variable %in% c("ssb","fbar","rec")),
-              aes(ymin=Low, ymax=High, fill=ly), alpha=0.3) +
-  geom_line(aes(colour=ly)) +
-  geom_point(aes(colour=ly)) +
+  geom_ribbon(aes(ymin=low, ymax=high, fill=file), alpha=0.3) +
+  geom_line(aes(colour=file)) +
+  geom_point(aes(colour=file)) +
+  geom_hline(data=filter(rp, grepl("msy", refpoint)), aes(yintercept=value), linetype="dashed") +
+  geom_hline(data=filter(rp, grepl("lim", refpoint)), aes(yintercept=value)) +
   scale_y_continuous(labels = addUnits) +
   expand_limits(y=0) +
   labs(x="", y="") +
@@ -618,32 +784,97 @@ df_retro %>%
 
 ```
 
-##### page break
+\newpage
+
+**Retro of the Assessments**
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+t <-
+  retro_rby %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+  filter(file == assessments[[2]]) %>% 
+  mutate(finalyear = as.character(finalyear)) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec")))
+  
+# plot of trend by variable
+t %>% 
+  ggplot(aes(x=year,y=est, group=finalyear)) +
+  theme_publication() +
+  theme(legend.position = "none") +
+  theme(legend.title=element_blank()) +
+  geom_ribbon(aes(ymin=low, ymax=high, fill=finalyear), alpha=0.3) +
+  geom_line(aes(colour=finalyear)) +
+  geom_point(aes(colour=finalyear)) +
+  scale_y_continuous(labels = addUnits) +
+  expand_limits(y=0) +
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=1)
+
+# stockassessment::fbartable(fit)
+
+
+```
+
+\newpage
+
+**Leave one out runs**
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+t <-
+  loo_rby %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+  filter(file == assessments[[2]]) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec")))
+  
+# plot of trend by variable
+t %>% 
+  ggplot(aes(x=year,y=est, group=leftout)) +
+  theme_publication() +
+  # theme(legend.position = "none") +
+  theme(legend.title=element_blank()) +
+  geom_ribbon(aes(ymin=low, ymax=high, fill=leftout), alpha=0.3) +
+  geom_line(aes(colour=leftout)) +
+  geom_point(aes(colour=leftout)) +
+  scale_y_continuous(labels = addUnits) +
+  expand_limits(y=0) +
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=1)
+
+# stockassessment::fbartable(fit)
+
+
+```
+
+\newpage
 
 Forecast
 
 ```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
 
-fit <- fit_ARU.27.5b6a_WGDEEP_2021
+fit <- get(paste0("fit_", assessments[2]))
 
-source("fix_forecast.r")
+dty  <- max(fit$data$years)        # Last data year
+imy  <- dty + 1                    # Intermediate year
+fcy  <- imy + 1                    # Forecast year
+cty  <- fcy + 1                    # Continuation year
+fuy  <- c(imy, fcy, cty)           # Future years
 
-
-Ry  <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
-fsq <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
-ft   <- c(  fsq, 0.000001,   0.2,  0.241,  0.33,     seq(0.01,0.3,0.01) )
-labs <- c("Fsq",  "Fzero","Fmsy1","Fmsy2", "Fp0.5",  paste0("F=",as.character(seq(0.01,0.3,0.01))) )
-
-# ft   <- c(  fsq)
-# labs <- c("Fsq" )
-# rectab<-rectable(fit)
-# recpool<-rectab[rownames(rectab)%in%Ry,1]
+Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
+fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
+ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
+labs <- c("Fsq",  "Fzero", "Fmsy", "Fp0.5",  paste0("F=",as.character(seq(0.01,0.3,0.01))) )
+# ft   <- c(  fsq, 0.000001,   0.2,  0.241,  0.33)
+# labs <- c("Fsq",  "Fzero","Fmsy1","Fmsy2", "Fp0.5" )
 
 FC<-list()
 fc <- data.frame(stringsAsFactors = FALSE)
 for (i in 1:length(ft)) {
-  print(ft[i])
+  # print(ft[i])
   set.seed(12345)
+  
+  # forecast
   FC[[i]] <-forecastx(
       fit,
       fscale = c(NA, NA, NA, NA, NA),
@@ -653,13 +884,8 @@ for (i in 1:length(ft)) {
       processNoise = FALSE,
       addTSB = TRUE
     )
-  # FC[[i]] <-forecast(
-  #     fit,
-  #     fscale = c(NA, NA, NA, NA, NA),
-  #     fval = c(fsq, fsq, ft[i], ft[i], ft[i]),
-  #     rec.years = Ry,
-  #     label = labs[i]
-  #   )
+  
+  # as data.frame
   fc <-
     bind_rows(
       fc,
@@ -675,21 +901,9 @@ for (i in 1:length(ft)) {
     )
 }
 
-# plot
-
-# fc %>% 
-#   filter(year > 2020) %>% 
-#   filter(var %in% c("catch","ssb")) %>% 
-#   
-#   ggplot(aes(x=ft, y=median, group=var)) +
-#   geom_line() +
-#   expand_limits(y=0) +
-#   facet_grid(var~year, scales="free_y")
-
-
 # current year
 fc %>% 
-  filter(year==2021) %>% 
+  filter(year==imy) %>% 
   filter(label=="Fsq") %>% 
   filter(var != "tsb") %>% 
   mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
@@ -705,17 +919,24 @@ fc %>%
 fc %>% 
   mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
   mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
-  filter(year %in% c(2022, 2023)) %>% 
+  
+  filter(
+    (var %in% c("catch")   & year %in% c(fcy)) |
+    (var %in% c("ssb") & year %in% c(fcy, cty))
+  ) %>% 
   
   mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
   dplyr::select(-median, -low, -high) %>% 
   
-  filter(var %in% c("ssb","catch")) %>%
   mutate(var2 = paste(var,year,sep="_")) %>% 
   dplyr::select(-year, -var) %>% 
-  
+
   tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
-  dplyr::select(label, ft, catch_2022, ssb_2022, ssb_2023) %>% 
+  dplyr::select(ft,
+              label, 
+              paste("catch", fcy, sep="_"),
+                                    paste("ssb", fcy, sep="_"),
+                                    paste("ssb", cty, sep="_")) %>% 
   pandoc.table(.,
                style = "simple",
                split.tables=120, 
@@ -724,195 +945,5 @@ fc %>%
   
 
 
-
-```
-
-
-```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
-
-# Assessment + forecast
-
-# observed catch in tonnes
-ct <- 
-  read.table("ct.dat", skip=5) %>% 
-  as.data.frame() %>%
-  setNames("obs") %>% 
-  mutate(
-    obs   = as.numeric(obs),
-    source="assessment",
-    var   = "catch", 
-  ) %>% 
-  bind_cols(year=fit$data$years) %>% 
-  mutate(year  = as.numeric(year))
-
-# assessment
-ass <-
-  rby %>% 
-    filter(file %in% c("ARU.27.5b6a_WGDEEP_2021")) %>% 
-    filter(variable %in% c("ssb","fbar","catch")) %>%
-    # filter(variable %in% c("catch")) %>% 
-    lowcase() %>% 
-    rename(var=variable) %>%
-    mutate(source="assessment") %>%
-    mutate(year = ifelse(var=="catch", year+1994,year)) 
-  
-# forecast
-t1 <-
-  fc %>% 
-    filter(var %in% c("ssb","fbar","catch")) %>%
-    # filter(var %in% c("catch")) %>% 
-    filter(label %in% c("Fsq", "Fmsy1")) %>% 
-    mutate(year=as.numeric(year)) %>% 
-    rename(estimate=median) %>% 
-    mutate(source="forecast")
-
-plist <- list()
-mylabels <- c("Fsq", "Fmsy1")
-for (i in 1:length(mylabels)) {
-  plist[[i]] <-
-    t1 %>% 
-    filter(label == mylabels[[i]]) %>% 
-    
-    ggplot(aes(x=year,y=estimate, group=label)) +
-    theme_publication() +
-    theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
-    {if(i!=length(mylabels)) theme(legend.position="null") } +   
-    
-    # reference points
-    geom_hline(data=rp, aes(yintercept=value, linetype=refpoint), inherit.aes=FALSE) +
-    guides(linetype=FALSE) +
-    
-    # assessment
-    geom_line(data=ass, aes(colour=source)) +
-    geom_ribbon(data=ass, aes(ymin=low, ymax=high, fill=source), alpha=0.3) +
-    
-    # observations
-    geom_point(data=ct, aes(x=year,y=obs), inherit.aes = FALSE) +
-  
-    # forecast
-    geom_line(aes(colour=source)) +
-    geom_ribbon(aes(ymin=low, ymax=high, fill=source), alpha=0.3) +
-    
-    expand_limits(y=0) +
-    labs(x="", y="", title=mylabels[[i]]) +
-    facet_wrap(~var, scales="free_y", nrow=1)
-}
-
-print(patchwork::wrap_plots(plist) + 
-  patchwork::plot_layout(ncol = 1, heights = c(0.5, 0.5)) +
-  patchwork::plot_annotation() & theme(plot.tag = element_text(size = 8)))
-
-```
-
-```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
-
-# Deepwater survey
-
-t <-
-  bind_rows(
-    ibya_ARU.27.5b6a_WGDEEP_2021 %>% mutate(source="GLM"),
-    ibya_Aru.27.5b6a_wgdeep2021_trial_deepsurv %>% mutate(source="ALK")
-  ) %>% 
-  filter(!is.na(oU2)) %>% 
-  group_by(age, source) %>% 
-  mutate(
-    avg = mean(oU2),
-    sd  = sd(oU2)) %>% 
-  mutate(
-    z  = (oU2-avg)/sd
-  )
-
-t %>% 
-  ggplot(aes(x=year,y=z)) +
-  theme_publication() +
-  geom_line(aes(colour=source), size=1) +
-  labs(x="") +
-  facet_wrap(~age, scales="free_y")
-
-
-```
-
-```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
-
-# Catch in numbers comparison
-
-fleets <- unique(fit$data$aux[, "fleet"])
-idx <- fit$data$aux[, "fleet"] %in% fleets
-
-# log catch number at age
-t <- 
-  data.frame(
-    age   = fit$data$aux[idx, "age"],
-    fleet = as.character(fit$data$aux[idx, "fleet"]),
-    year  = fit$data$aux[idx, "year"],
-    obs   = fit$data$logobs[idx],
-    pred  = fit$rep$predObs[idx]
-  ) %>% 
-  filter(fleet==1) %>% 
-  pivot_longer(names_to="source",values_to="logoC", c("obs","pred")) %>% 
-  group_by(year, source) %>% 
-  summarise(
-    logoC = sum(logoC, na.rm=TRUE)
-  )
-
-t %>% 
-  ggplot(aes(x=year,y=logoC)) +
-  theme_publication() +
-  geom_line(aes(colour=source), size=1) +
-  labs(x="") +
-  facet_wrap(~age)
-
-
-rbya_ARU.27.5b6a_WGDEEP_2021 %>%
-  filter(!is.na(oC), oC != -1) %>% 
-  mutate(sop = cW * oC) %>% 
-  group_by(year) %>% 
-  summarise(sop = sum(sop, na.rm=TRUE)) %>% 
-  View()
-
-
-
-```
-
-```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
-
-# Catch in tonnes comparison
-
-# observed catch in tonnes
-ct <- 
-  read.table("ct.dat", skip=5) %>% 
-  as.data.frame() %>%
-  setNames("obs") %>% 
-  mutate(
-    obs   = as.numeric(obs),
-    source="caton"
-  ) %>% 
-  bind_cols(year=fit$data$years) %>% 
-  mutate(year  = as.numeric(year)) %>% 
-  
-  bind_rows(
-    rbya_ARU.27.5b6a_WGDEEP_2021 %>%
-      filter(!is.na(oC), oC != -1) %>% 
-      mutate(sop = cW * oC) %>% 
-      group_by(year) %>% 
-      summarise(obs = sum(sop, na.rm=TRUE)) %>%
-      mutate(source = "sop")     
-  )
-
-
-ct %>% 
-  ggplot(aes(x=year, y=obs)) +
-  theme_publication() +
-  geom_line(aes(colour=source))
-
-
-t2 %>% 
-  mutate(inassessment = ifelse(ageorlength <= 4, FALSE, TRUE)) %>% 
-  group_by(inassessment) %>% 
-  mutate(sop = canum * weca) %>% 
-  summarise(sop = sum(sop, na.rm=TRUE)) %>% 
-  summarise(sop = sum(sop, na.rm=TRUE)) 
-  
-  
 
 ```
