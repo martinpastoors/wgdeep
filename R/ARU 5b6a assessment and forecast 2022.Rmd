@@ -1,0 +1,1481 @@
+---
+output: 
+  word_document:
+    reference_docx: ../report_template_v1.5.dotx
+---
+
+```{r setup, echo=FALSE, fig.asp=1.0, fig.align="center", message=FALSE, warning=FALSE}
+
+# =======================================================================================
+# ARU 5b6a assessment and forecast
+# 
+# 21/04/2020 First coding; adapted from WGWIDE code
+# 25/04/2021 Fully adapted to inclusion of plots for WGDEEP report
+# 30/04/2022 Adapted for WGDEEP 2022
+# =======================================================================================
+
+# devtools::install_github("fishfollower/SAM/stockassessment")
+
+# try(if(packageVersion("stockassessment")=="0.5.4") stop("wrong version of Stockassessment package"))
+
+require("knitr")
+knitr::opts_chunk$set(echo = FALSE,	message = FALSE,	warning = FALSE,	comment = "",	crop = TRUE )
+knitr::opts_chunk$set(fig.width=10) 
+
+options(dplyr.summarise.inform = FALSE)
+
+rm(list=ls())
+
+# library(devtools)
+library(tidyverse)    # tidying packages
+library(readxl)       # read excel
+library(scales)
+library(RColorBrewer)
+library(viridis)
+library(pander)
+library(stockassessment)
+# devtools::install_github("shfischer/FLfse/FLfse")
+# library(FLfse)  # 
+library(ggrepel)
+
+# devtools::install_github("einarhjorleifsson/ggmisc")
+# library(ggmisc)     # e.g. crayola
+
+# devtools::install_github("einarhjorleifsson/readsam")
+# library(readsam)
+
+# lowcase function
+source("lowcase.r")
+source("theme_publication.r")
+source("sam_process_error.r")
+source("fix_forecast.r")
+source("common.R")
+
+#' Function for extracting an object from a .RData file created by R's save() command
+#' Inputs: RData file, object name
+extract_from_rdata <- function(file, object) {
+  E <- new.env()
+  load(file=file, envir=E)
+  return(get(object, envir=E, inherits=F))
+}
+
+# Add units function
+addUnits <- function(n) {
+  labels <- dplyr::case_when(
+    n < 1000 ~ as.character(n),  # less than thousands
+    n < 1e6  ~ paste0(round(n/1e3), 'k'),  # in thousands
+    n < 1e9  ~ paste0(round(n/1e6), 'M'), # in millions
+    n < 1e12 ~ paste0(round(n/1e9), 'B'), # in billions
+    n < 1e15 ~ paste0(round(n/1e12), 'T'), # in trillions
+    TRUE     ~ 'too big!'
+  )
+  return(labels)
+}
+
+
+nam         <- "ARU.27.5b6a_WGDEEP_2022"
+assessments <- c("ARU.27.5b6a_WGDEEP_2021", nam)
+user        <- "user233"
+web         <- TRUE
+filepath    <- file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs",
+                         user,
+                         nam,
+                         "run")
+configpath    <- file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs",
+                         user,
+                         nam,
+                         "conf")
+localpath   <- file.path("C:/temp")
+
+rp          <- data.frame(variable = c("fbar","ssb","ssb"),
+                          refpoint = c("fmsy","blim","msybtrigger"),
+                          value    = c(0.24, 59730, 82999)) %>% 
+    mutate(variable = factor(variable, levels=c("ssb","fbar","rec")))
+
+
+# a <- assessments[[2]]
+
+# read input, results and parameter data
+
+# ibya <- rbya <- rby <- obscatch <- pars <- opr <- resosa <- loo_rby <- retro_rby <- tibble()
+# for (a in assessments) {
+#   print(a)
+# 
+#   # set filepath
+#   filepath    <- file.path("https://www.stockassessment.org/datadisk/stockassessment/userdirs",
+#                            user,
+#                            a,
+#                            "run")
+# 
+#   # Load assessment RData files
+#   # load(file=file.path(localpath, paste0(a, ".RData")))
+#   
+#   # fit
+#   assign(paste0("fit_", a),
+#          getfitfromweb(a))
+# 
+#   # flstock
+#   assign(paste0("flstock_", a),
+#          FLfse::SAM2FLStock(get(paste0("fit_", a))))
+# 
+#   #leaveout
+#   fil <- file.path(filepath, "leaveout.RData")
+#   if(RCurl::url.exists(fil)) {
+#     # assign the leaveout.RData file
+#     assign(paste0("loo_", a),
+#            extract_from_rdata(url(fil), "LO"))
+# 
+#   } else {
+#     # run the leave out analyse
+#     assign(paste0("loo_", a),
+#          stockassessment::leaveout(get(paste0("fit_", a))))
+#   }
+# 
+#   #retro
+#   fil <- file.path(filepath, "retro.RData")
+#   if(RCurl::url.exists(fil)) {
+#     # assign the RData file
+#     assign(paste0("retro_", a),
+#            extract_from_rdata(url(fil), "RETRO"))
+# 
+#   } else {
+#     # run the analysis
+#     assign(paste0("retro_", a),
+#          stockassessment::retro(get(paste0("fit_", a)), year=5))
+#   }
+# 
+#   # residuals                     # stockassessment:::procres(fit)
+#   fil <- file.path(filepath, "residuals.RData")
+#   if(RCurl::url.exists(fil)) {
+#     # assign the RData file
+#     assign(paste0("res_", a),
+#            extract_from_rdata(url(fil), "RES"))
+#     assign(paste0("procres_", a),
+#            extract_from_rdata(url(fil), "RESP"))
+# 
+#   } else {
+#     # run the analyses
+#     assign(paste0("res_", a),
+#          residuals(get(paste0("fit_", a))))
+#     assign(paste0("procres_", a),
+#          stockassessment::procres(get(paste0("fit_", a))))
+#   }
+# 
+#   #ibya
+#   assign(paste0("ibya_",a),
+#          mutate(fishvice::sam_ibya(getfitfromweb(a)), file=a))
+# 
+#   #observed catch
+#   assign(paste0("obscatch_",a),
+#          get(paste0("ibya_",a)) %>%
+#          mutate(est = oC * cW,
+#                 variable="catch") %>%
+#          group_by(year, variable, file) %>%
+#          summarise(est = sum(est, na.rm=TRUE)))
+# 
+#   # rbya
+#   assign(paste0("rbya_",a),
+#          mutate(fishvice::sam_rbya(get(paste0("fit_", a))), file=a) )
+# 
+#   # rby
+#   assign(paste0("rby_",a) ,
+#          mutate(fishvice::sam_rby(get(paste0("fit_", a))), file=a) )
+# 
+#   # opr
+#   assign(paste0("opr_",a) ,
+#          mutate(fishvice:::sam_opr(get(paste0("fit_", a))), file=a) )
+# 
+#   # parameters
+#   assign(paste0("pars_",a) ,
+#          mutate(fishvice:::sam_partable(get(paste0("fit_", a))), file=a) )
+# 
+#   # resosa
+#   assign(paste0("resosa_",a) ,
+#          mutate(fishvice:::sam_one_observation_ahead_residuals(get(paste0("res_", a))), file=a) )
+# 
+#   # retro_rby
+#   assign(paste0("retro_rby_", a),
+#          get(paste0("rby_", a)) %>%  mutate(finalyear = max(get(paste0("rby_", a))$year)))
+#   for (i in 1:length(get(paste0("retro_", a)))) {
+#     assign(paste0("retro_rby_", a),
+#        bind_rows(
+#          get(paste0("retro_rby_", a)),
+#          fishvice::sam_rby(get(paste0("retro_", a))[[i]]) %>%
+#            mutate(finalyear = max(get(paste0("retro_", a))[[i]]$data$years))
+#          )
+#        )
+#   }
+# 
+#   # loo_rby
+#   assign(paste0("loo_rby_", a), tibble())
+#   # i <- names(get(paste0("loo_", a)))[1]
+#   for (i in names(get(paste0("loo_", a)))) {
+#     assign(paste0("loo_rby_", a),
+#        bind_rows(
+#          get(paste0("loo_rby_", a)),
+#          fishvice::sam_rby(get(paste0("loo_", a))[[i]]) %>%
+#            mutate(leftout = i)
+#          )
+#        )
+#   }
+# 
+#   # to do: process error
+# 
+#   # bind together
+#   ibya     <- bind_rows(ibya, get(paste0("ibya_",a)))
+#   rbya     <- bind_rows(rbya, get(paste0("rbya_",a)))
+#   rby      <- bind_rows(rby, get(paste0("rby_",a)))
+#   obscatch <- bind_rows(obscatch, get(paste0("obscatch_",a)))
+#   pars     <- bind_rows(pars, get(paste0("pars_",a)))
+#   opr      <- bind_rows(opr, get(paste0("opr_",a)))
+#   resosa   <- bind_rows(opr, get(paste0("opr_",a)))
+#   retro_rby  <- bind_rows(retro_rby, get(paste0("retro_rby_",a)) %>% mutate(file=a))
+#   loo_rby  <- bind_rows(loo_rby, get(paste0("loo_rby_",a)) %>% mutate(file=a))
+# 
+#   save(
+#     list=as.character(
+#       c(
+#         paste0("fit_",a),
+#         paste0("flstock_",a),
+#         paste0("loo_",a),
+#         paste0("retro_",a),
+#         paste0("res_",a),
+#         paste0("procres_",a),
+#         paste0("ibya_",a),
+#         paste0("rbya_",a),
+#         paste0("rby_",a),
+#         paste0("obscatch_",a),
+#         paste0("pars_",a),
+#         paste0("opr_",a),
+#         paste0("resosa_",a),
+#         paste0("retro_rby_",a),
+#         paste0("loo_rby_",a)
+#     )),
+#     file=file.path(localpath, paste0(a, ".RData"))
+#   )
+# 
+# }
+
+
+# Load assessment RData files
+for (a in assessments) {
+  load(
+    file=file.path(localpath, paste0(a, ".RData"))
+  )
+}
+
+# combine overall assessment results
+ibya <- rbya <- rby <- obscatch <- pars <- opr <- resosa <- loo_rby <- retro_rby <- tibble()
+for (a in assessments) {
+  ibya     <- bind_rows(ibya, get(paste0("ibya_",a)))
+  rbya     <- bind_rows(rbya, get(paste0("rbya_",a)))
+  rby      <- bind_rows(rby, get(paste0("rby_",a)))
+  obscatch <- bind_rows(obscatch, get(paste0("obscatch_",a)))
+  pars     <- bind_rows(pars, get(paste0("pars_",a)))
+  opr      <- bind_rows(opr, get(paste0("opr_",a)))
+  resosa   <- bind_rows(opr, get(paste0("opr_",a)))
+  retro_rby<- bind_rows(retro_rby, 
+                        get(paste0("retro_rby_",a)) %>% mutate(file=a))
+  loo_rby  <- bind_rows(loo_rby, 
+                        get(paste0("loo_rby_",a)) %>% mutate(file=a))
+}
+
+
+```
+
+**Overview of SAM assessments for Greater argentine in 5b and 6a**
+
+**`r paste(assessments, collapse="; ")`**
+
+Martin Pastoors, `r format(Sys.time(), '%d/%m/%Y')`
+
+**Tables**
+
+**Table 1. Summary of the assessment**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fit <- get(paste("fit", assessments[2], sep="_"))
+
+stamp<-gsub('-[[:digit:]]{4}$','',gsub(':','.',gsub(' ','-',gsub('^[[:alpha:]]{3} ','',date()))))
+
+catch<-tsbtable(fit)
+colnames(catch)<-c("CATCH","Low", "High")
+
+tab.summary <- as.data.frame(cbind(summary(fit), catch)) %>% rownames_to_column(var="year")
+pander::pandoc.table(tab.summary,
+                     style="simple", split.tables=200, justify="right", missing=".")
+
+```
+
+\newpage
+
+**Table 2. Estimated fishing mortality at age**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+pander::pandoc.table(
+  as.data.frame(faytable(fit)) %>%  rownames_to_column(var="year"),
+  style="simple", split.tables=200, justify="right", missing=".",
+  round=3)
+
+```
+
+\newpage
+
+**Table 3. Estimated stock numbers at age**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+pander::pandoc.table(
+  as.data.frame(ntable(fit)) %>%  mutate(across(.cols = everything(), ~ ./1)) %>% rownames_to_column(var="year"),
+  style="simple", split.tables=200, justify="right", missing=".",
+  round=0)
+
+```
+
+\newpage
+
+**Table 4. model parameters**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+pander::pandoc.table(
+  as.data.frame(partable(fit)) %>%  rownames_to_column(var="name"),
+  style="simple", split.tables=200, justify="right", missing=".")
+
+```
+
+**Table 5. model fitting**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+pander::pandoc.table(
+  as.data.frame(modeltable(fit)) %>%  rownames_to_column(var="model"),
+  style="simple", split.tables=200, justify="right", missing=".",
+  round=3,
+  caption="Table 5. Model fitting")
+
+```
+
+**Table 6. Selected standard deviations**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+sdState<-function(fit, y=max(fit$data$years)-1:0){
+  idx <- names(fit$sdrep$value) == "logR"
+  sdLogR<-fit$sdrep$sd[idx][fit$data$years%in%y]
+  idx <- names(fit$sdrep$value) == "logssb"
+  sdLogSSB<-fit$sdrep$sd[idx][fit$data$years%in%y]
+  idx <- names(fit$sdrep$value) == "logfbar"
+  sdLogF<-fit$sdrep$sd[idx][fit$data$years%in%y]
+  ret<-cbind(sdLogR, sdLogSSB, sdLogF)
+  rownames(ret)<-y
+  colnames(ret)<-c("sd(log(R))", "sd(log(SSB))", "sd(log(Fbar))")
+  return(ret)
+}
+
+pander::pandoc.table(
+  as.data.frame(sdState(fit)) %>%  rownames_to_column(var="Year"),
+  style="simple", split.tables=200, justify="right", missing=".",
+  round=3)
+
+```
+
+\newpage
+
+**Short term forecasts**
+
+Four short term forecasts are presented: 
+* Fsq assumption (F2022=F2021=0.185)
+* Catch constraint assumption (Catch 2022 = Catch 2021 = 13081 t.)
+* TAC constraint assumption (Catch 2022 = 'TAC' 2022 = 29626 t.)
+* TAC uptake assumption (Catch 2022 = 'TAC' 2022 * 0.63 = 18873 t.)
+
+In all scenarios, the forecasts starts in 2021 (last data year) with an fsq assumption. The start in the last data year is a requirement of the SAM forecast. 
+
+**Forecast with Fsq assumption (F2022=F2021=0.185)**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fit <- get(paste0("fit_", assessments[2]))
+
+dty  <- max(fit$data$years)        # Last data year
+imy  <- dty + 1                    # Intermediate year
+fcy  <- imy + 1                    # Forecast year
+cty  <- fcy + 1                    # Continuation year
+fuy  <- c(imy, fcy, cty)           # Future years
+
+Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
+fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
+ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
+labs <- c("Fsq",  "Fzero", "Fmsy", "Fp0.5",  paste0("F=",as.character(seq(0.01,0.3,0.01))) )
+# ft   <- c( fsq,  0.000001,   0.241,   0.33)
+# labs <- c("Fsq",  "Fzero",  "Fmsy", "Fp0.5" )
+
+FC<-list()
+fc <- data.frame(stringsAsFactors = FALSE)
+for (i in 1:length(ft)) {
+  # print(ft[i])
+  set.seed(12345)
+  
+  # forecast
+  FC[[i]] <-forecastx(
+      fit,
+      fscale = c(NA, NA, NA, NA, NA),
+      fval = c(fsq, fsq, ft[i], ft[i], ft[i]),
+      rec.years = Ry,
+      label = labs[i],
+      processNoise = FALSE,
+      addTSB = TRUE
+    )
+  
+  # as data.frame
+  fc <-
+    bind_rows(
+      fc,
+      as.data.frame(attributes(FC[[i]])$tab) %>% 
+      rownames_to_column(var="year") %>% 
+      mutate(
+        ft = ft[i], 
+        label = labs[i]
+      ) %>% 
+      tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"tsb:high") %>% 
+      tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+      tidyr::pivot_wider(names_from=type, values_from=data)
+    )
+}
+
+# last data year
+fc %>% 
+  filter(year==dty) %>% 
+  filter(label=="Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# current year
+fc %>% 
+  filter(year==imy) %>% 
+  filter(label=="Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# forecast
+fc %>% 
+  mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  
+  filter(
+    (var %in% c("catch")   & year %in% c(fcy)) |
+    (var %in% c("ssb") & year %in% c(fcy, cty))
+  ) %>% 
+  
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  
+  mutate(var2 = paste(var,year,sep="_")) %>% 
+  dplyr::select(-year, -var) %>% 
+
+  tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+  dplyr::select(ft,
+              label, 
+              paste("catch", fcy, sep="_"),
+                                    paste("ssb", fcy, sep="_"),
+                                    paste("ssb", cty, sep="_")) %>% 
+  pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+  
+
+
+
+```
+\newpage
+
+**Catch constraint assumption (Catch 2022 = Catch 2021 = 13081 t.)**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fit <- get(paste0("fit_", assessments[2]))
+
+dty  <- max(fit$data$years)        # Last data year
+imy  <- dty + 1                    # Intermediate year
+fcy  <- imy + 1                    # Forecast year
+cty  <- fcy + 1                    # Continuation year
+fuy  <- c(imy, fcy, cty)           # Future years
+
+Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
+fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
+ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
+labs <- c("CC-Fsq",  "CC-Fzero", "CC-Fmsy", "CC-Fp0.5",  paste0("CC-F=",as.character(seq(0.01,0.3,0.01))) )
+# ft   <- c(    fsq,     0.000001,     0.241,       0.33)
+# labs <- c("TC-Fsq",  "TC-Fzero", "TC-Fmsy", "TC-Fp0.5")
+
+# Catch constraint 2022
+cc <- 13081
+# cc <- 20000
+  
+FC<-list()
+fc <- data.frame(stringsAsFactors = FALSE)
+for (i in 1:length(ft)) {
+  # print(ft[i])
+  set.seed(12345)
+  
+  # forecast
+  FC[[i]] <-forecastx(
+      fit,
+      fscale = c(NA, NA, NA, NA, NA),
+      catchval = c(NA , cc,    NA,    NA,    NA),
+      fval     = c(fsq, NA, ft[i], ft[i], ft[i]),
+      rec.years = Ry,
+      label = labs[i],
+      processNoise = FALSE,
+      addTSB = TRUE
+    )
+
+  # as data.frame
+  fc <-
+    bind_rows(
+      fc,
+      as.data.frame(attributes(FC[[i]])$tab) %>% 
+        rownames_to_column(var="year") %>% 
+        mutate(
+          ft = get("fbar:median"), 
+          label = labs[i]
+        ) %>% 
+        tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"tsb:high") %>% 
+        tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+        tidyr::pivot_wider(names_from=type, values_from=data)
+    )
+}
+
+      # as.data.frame(attributes(FC[[3]])$tab) %>% 
+      # rownames_to_column(var="year")  %>% 
+      # mutate(
+      #   ft = get("fbar:median"), 
+      #   label = labs[i]
+      # ) 
+
+# last data year
+fc %>% 
+  filter(year==dty) %>% 
+  filter(label=="CC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+        
+# current year
+fc %>% 
+  filter(year==imy) %>% 
+  filter(label=="CC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# forecast
+fc %>% 
+  
+  filter(
+    (var %in% c("catch") & year %in% c(fcy)) |
+    (var %in% c("ssb")   & year %in% c(fcy, cty))
+  ) %>% 
+  
+  mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  
+  
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  
+  mutate(var2 = paste(var,year,sep="_")) %>% 
+  dplyr::select(-year, -var) %>% 
+
+  tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+  dplyr::select(ft,
+              label, 
+              paste("catch", fcy, sep="_"),
+                                    paste("ssb", fcy, sep="_"),
+                                    paste("ssb", cty, sep="_")) %>% 
+  pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+  
+
+
+
+```
+
+\newpage
+
+**TAC constraint assumption (Catch 2022 = 'TAC' 2022 = 29626 t.)**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fit <- get(paste0("fit_", assessments[2]))
+
+dty  <- max(fit$data$years)        # Last data year
+imy  <- dty + 1                    # Intermediate year
+fcy  <- imy + 1                    # Forecast year
+cty  <- fcy + 1                    # Continuation year
+fuy  <- c(imy, fcy, cty)           # Future years
+
+Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
+fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
+ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
+labs <- c("TC-Fsq",  "TC-Fzero", "TC-Fmsy", "TC-Fp0.5",  paste0("TC-F=",as.character(seq(0.01,0.3,0.01))) )
+# ft   <- c(    fsq,     0.000001,     0.241,       0.33)
+# labs <- c("TC-Fsq",  "TC-Fzero", "TC-Fmsy", "TC-Fp0.5")
+
+FC<-list()
+fc <- data.frame(stringsAsFactors = FALSE)
+for (i in 1:length(ft)) {
+  # print(ft[i])
+  set.seed(12345)
+  
+  # forecast
+  FC[[i]] <-forecastx(
+      fit,
+      fscale = c(NA, NA, NA, NA, NA),
+      catchval = c(NA , 29626,    NA,    NA,    NA),
+      fval     = c(fsq,    NA, ft[i], ft[i], ft[i]),
+      rec.years = Ry,
+      label = labs[i],
+      processNoise = FALSE,
+      addTSB = TRUE
+    )
+
+  # as data.frame
+  fc <-
+    bind_rows(
+      fc,
+      as.data.frame(attributes(FC[[i]])$tab) %>% 
+        rownames_to_column(var="year") %>% 
+        mutate(
+          ft = get("fbar:median"), 
+          label = labs[i]
+        ) %>% 
+        tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"tsb:high") %>% 
+        tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+        tidyr::pivot_wider(names_from=type, values_from=data)
+    )
+}
+
+
+# last data year
+fc %>% 
+  filter(year==dty) %>% 
+  filter(label=="TC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# current year
+fc %>% 
+  filter(year==imy) %>% 
+  filter(label=="TC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# forecast
+fc %>% 
+  
+  filter(
+    (var %in% c("catch") & year %in% c(fcy)) |
+    (var %in% c("ssb")   & year %in% c(fcy, cty))
+  ) %>% 
+  
+  mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  
+  
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  
+  mutate(var2 = paste(var,year,sep="_")) %>% 
+  dplyr::select(-year, -var) %>% 
+
+  tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+  dplyr::select(ft,
+              label, 
+              paste("catch", fcy, sep="_"),
+                                    paste("ssb", fcy, sep="_"),
+                                    paste("ssb", cty, sep="_")) %>% 
+  pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+  
+
+
+
+```
+
+\newpage
+
+**TAC uptake assumption (Catch 2022 = 'TAC' 2022 * 0.63 = 18873 t.)**
+
+This forecast is a modified catch constraint based on the regression between TAC and uptake)
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fit <- get(paste0("fit_", assessments[2]))
+
+dty  <- max(fit$data$years)        # Last data year
+imy  <- dty + 1                    # Intermediate year
+fcy  <- imy + 1                    # Forecast year
+cty  <- fcy + 1                    # Continuation year
+fuy  <- c(imy, fcy, cty)           # Future years
+
+Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
+fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
+ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
+labs <- c("CC-Fsq",  "CC-Fzero", "CC-Fmsy", "CC-Fp0.5",  paste0("CC-F=",as.character(seq(0.01,0.3,0.01))) )
+# ft   <- c(    fsq,     0.000001,     0.241,       0.33)
+# labs <- c("TC-Fsq",  "TC-Fzero", "TC-Fmsy", "TC-Fp0.5")
+
+# Catch constraint 2022
+cc <- 18873
+# cc <- 20000
+
+FC<-list()
+fc <- data.frame(stringsAsFactors = FALSE)
+for (i in 1:length(ft)) {
+  # print(ft[i])
+  set.seed(12345)
+  
+  # forecast
+  FC[[i]] <-forecastx(
+      fit,
+      fscale = c(NA, NA, NA, NA, NA),
+      catchval = c(NA , cc,    NA,    NA,    NA),
+      fval     = c(fsq, NA, ft[i], ft[i], ft[i]),
+      rec.years = Ry,
+      label = labs[i],
+      processNoise = FALSE,
+      addTSB = TRUE
+    )
+
+  # as data.frame
+  fc <-
+    bind_rows(
+      fc,
+      as.data.frame(attributes(FC[[i]])$tab) %>% 
+        rownames_to_column(var="year") %>% 
+        mutate(
+          ft = get("fbar:median"), 
+          label = labs[i]
+        ) %>% 
+        tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"tsb:high") %>% 
+        tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+        tidyr::pivot_wider(names_from=type, values_from=data)
+    )
+}
+
+      # as.data.frame(attributes(FC[[3]])$tab) %>% 
+      # rownames_to_column(var="year")  %>% 
+      # mutate(
+      #   ft = get("fbar:median"), 
+      #   label = labs[i]
+      # ) 
+
+        
+# last data year
+fc %>% 
+  filter(year==dty) %>% 
+  filter(label=="CC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# current year
+fc %>% 
+  filter(year==imy) %>% 
+  filter(label=="CC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# forecast
+fc %>% 
+  
+  filter(
+    (var %in% c("catch") & year %in% c(fcy)) |
+    (var %in% c("ssb")   & year %in% c(fcy, cty))
+  ) %>% 
+  
+  mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  
+  
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  
+  mutate(var2 = paste(var,year,sep="_")) %>% 
+  dplyr::select(-year, -var) %>% 
+
+  tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+  dplyr::select(ft,
+              label, 
+              paste("catch", fcy, sep="_"),
+                                    paste("ssb", fcy, sep="_"),
+                                    paste("ssb", cty, sep="_")) %>% 
+  pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+  
+
+
+# x <-hcr(
+#     fit,
+#     nYears = 3,
+#     Ftarget = 0.24,
+#     Btrigger = 82999,
+#     Blim = 0,
+#     preForecast = list(catchval = 30000),
+#     rec.years = Ry
+#   )
+#   
+# as.data.frame(attributes(x$forecast)$tab) %>% 
+#   rownames_to_column(var="year") %>% 
+#   mutate(
+#     ft = get("fbar:median"), 
+#     label = labs[i]
+#   ) %>% 
+#   tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"catch:high") %>% 
+#   tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+#   tidyr::pivot_wider(names_from=type, values_from=data) %>% 
+#   filter(
+#     (var %in% c("catch") & year %in% c(fcy)) |
+#     (var %in% c("ssb")   & year %in% c(fcy, cty))
+#   ) %>% 
+#   
+#   mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+#   mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+#   
+#   
+#   mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+#   dplyr::select(-median, -low, -high) %>% 
+#   
+#   mutate(var2 = paste(var,year,sep="_")) %>% 
+#   dplyr::select(-year, -var) %>% 
+# 
+#   tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+#   dplyr::select(ft,
+#               label, 
+#               paste("catch", fcy, sep="_"),
+#                                     paste("ssb", fcy, sep="_"),
+#                                     paste("ssb", cty, sep="_")) %>% 
+#   pandoc.table(.,
+#                style = "simple",
+#                split.tables=120, 
+#                justify = "right",
+#                missing=".")
+
+  
+```
+
+
+
+\newpage
+
+**FIGURES**
+
+**Catch numbers (Crayola)**
+
+```{r, echo=FALSE, fig.asp=1.3, fig.align="center", message=FALSE, warning=FALSE}
+
+t <-
+  opr %>% 
+  filter(file==nam) %>%
+  filter(!is.na(age)) %>% 
+
+  complete(file, fleet, year, age) %>% 
+  group_by(file, fleet, year, age) %>% 
+  summarise(oC = sum(exp(o), na.rm=TRUE)) %>% 
+  group_by(file, fleet, age) %>% 
+  mutate(value = oC/mean(oC, na.rm=TRUE)) %>% 
+  mutate(yc = year - age) %>% 
+  data.frame()
+  
+for (i in 1:length(unique(t$fleet))) {
+  assign(paste0("p", i),
+         t %>% 
+           filter(fleet == sort(unique(t$fleet))[i]) %>% 
+          
+           ggplot() +
+           theme_bw() +
+           theme(legend.position = "none") +
+           theme(axis.text.y     = element_blank()) +
+           theme(panel.border    = element_rect(colour="black" , size=0.1)) +
+           theme(axis.ticks.y    = element_blank() ) +
+           theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+           theme(panel.spacing   = unit(0.2, "lines")) +
+           theme(plot.margin=unit(c(0,0,0,0),"mm")) +
+           geom_col(aes(year, value, fill = factor(yc))) + 
+           ggmisc::scale_fill_crayola() +
+           scale_x_continuous(breaks=seq(min(t$year), max(t$year), 1)) +
+           labs(x = NULL, y = NULL, title=NULL) +
+           facet_grid(age ~ fleet, scale = "free_y", switch = "y") 
+      )
+  
+}
+
+print(cowplot::plot_grid(p1, p2, p3,
+                   nrow=1, scale=0.98, align="hv",
+                   rel_heights = c(1.5, 1.5, 1.5, 1.5)))
+
+
+
+```
+
+
+\newpage
+
+**Catch weights**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+t <-
+  rbya %>% 
+  filter(file==nam) %>%
+  filter(cW != -1) %>% 
+  mutate(cW = as.integer(cW * 1000)) 
+
+tt <-
+  t %>% 
+  group_by(file, age) %>% 
+  slice_tail(n=1)
+
+t %>%   
+  ggplot(aes(x=year, y=cW, group=age)) +
+  theme_publication() +
+  theme(legend.position = "none") +
+  geom_point(aes(colour=as.character(age))) +
+  geom_line(aes(colour=as.character(age))) +
+  ggrepel::geom_text_repel(data=tt, aes(x=year, y=cW, label=as.character(age), colour=as.character(age)), 
+                           hjust=0, direction="y", nudge_x = 1, segment_size=0.4, force=0.2,
+                           segment.colour="gray", box.padding = 0.5, min.segment.length = 0 ) +
+  scale_x_continuous(expand = expansion(mult = c(0.02 , 0.1))) +
+  labs(x="", y="cW (gr)") +
+  expand_limits(y=0) 
+
+t %>%   
+  ggplot(aes(x=year, y=cW, group=age)) +
+  theme_publication() +
+  theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(legend.position = "none") +
+  geom_point(aes(colour=as.character(age))) +
+  geom_line(aes(colour=as.character(age))) +
+  expand_limits(y=0) +
+  scale_x_continuous(breaks=scales::pretty_breaks()) +
+  labs(x="", y="cW (gr)") +
+  facet_wrap(~age, scales="free_y")
+
+```
+
+\newpage
+
+**Comparison of the assessment with two different settings**
+
+Comparison of the assessment with two different settings: 
+
+1. par$logSdLogN<-c(0,log(0.0001)) [assessment 2021]
+2. par$logSdLogN<-c(0,log(0.01)) [assessment 2022]
+
+No noticeable difference between the two settings. Note that the retrospective analysis in 2022 could not be run with settings as in WG2021 but did work with the updated settings. 
+
+```{r, echo=FALSE, fig.asp=0.9, fig.align="center", message=FALSE, warning=FALSE}
+
+# # data
+# fil <- file.path(filepath, "data.RData")
+# if(RCurl::url.exists(fil)) {
+#   load(url(fil))
+# }
+# 
+# # config
+# fil <- file.path(configpath, "model.cfg")
+# if(RCurl::url.exists(fil)) {
+#   conf <- loadConf(dat, url(fil), patch=TRUE)
+# }
+# 
+# par<-defpar(dat,conf)
+# 
+# par$logSdLogN<-c(0,log(0.01))
+# fit1<-sam.fit(dat,conf,par, map=list(logSdLogN=factor(c(1,NA))))
+# if(fit1$opt$convergence!=0) stop("Model did not converge.")
+# rby1 <- fishvice::sam_rby(fit1) %>% mutate(model="1")
+# 
+# par$logSdLogN<-c(0,log(0.0001))
+# fit2<-sam.fit(dat,conf,par, map=list(logSdLogN=factor(c(1,NA))))
+# if(fit2$opt$convergence!=0) stop("Model did not converge.")
+# rby2 <- fishvice::sam_rby(fit2) %>% mutate(model="2")
+
+# save(dat, conf, fit1, rby1, fit2, rby2, file=file.path(localpath, "rerun.RData"))
+load(file=file.path(localpath, "rerun.RData"))
+
+bind_rows(rby1, rby2) %>% 
+  # filter(variable == "ssb") %>% 
+  ggplot(aes(x=year, y=est, colour=model)) +
+  geom_line() +
+  geom_ribbon(aes(xmin = year, xmax=year, ymin=low, ymax=high, fill=model), alpha=0.4) +
+  facet_wrap(~variable, scales="free_y")
+
+
+```
+
+\newpage
+
+**Observed and predicted (logscale): catch**
+
+```{r, echo=FALSE, fig.asp=1.3, fig.align="center", message=FALSE, warning=FALSE}
+
+# generate plots for observations and predictions
+
+t <-
+  opr %>%
+  filter(file==nam) %>% 
+  rename(obs=o, pred=p) %>% 
+  mutate(
+    fleet = ifelse(grepl("summer"       , tolower(fleet)), "FSS",  fleet),
+    fleet = ifelse(grepl("faroesedeep"  , tolower(fleet)), "FDWS", fleet),
+    fleet = ifelse(grepl("scottishdeep" , tolower(fleet)), "SDWS", fleet),
+    fleet = ifelse(grepl("cpue"         , tolower(fleet)), "CPUE", fleet)
+  ) %>% 
+  mutate(
+    label = paste(fleet, ifelse(is.na(age), "biomass", "age"), ifelse(is.na(age), "", stringr::str_pad(age, width=2, pad="0")))
+  )
+
+# t1 <- t %>% filter(!is.na(age)) %>% distinct(fleet)
+# t2 <- t %>% filter(is.na(age)) %>% distinct(fleet)
+
+t %>% 
+  ggplot(aes(x=year, y=obs)) +
+  theme_publication() +
+  geom_point(colour="red", shape=21) +
+  geom_line(aes(y=pred), colour="black") +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+  labs(title="", x="", y="log") +
+  facet_wrap(~label, ncol=5, scales="free_y")
+
+
+```
+
+FSS = Faroese Summer Survey
+
+FDWS = Faroese Deepwater Survey
+
+SDWS = Scottish Deepwater Survey
+
+CPUE = Faroese EU CPUE index
+
+\newpage
+
+
+**One step ahead residuals**
+
+```{r echo=FALSE, fig.align="center", fig.asp=1.2, message=FALSE, warning=FALSE}
+
+plot(get(paste0("res_", assessments[2])))
+
+```
+\newpage
+
+**Process residuals**
+
+```{r echo=FALSE, fig.align="center", fig.asp=0.8, message=FALSE, warning=FALSE}
+
+plot(get(paste0("procres_", assessments[2])))
+
+```
+
+\newpage
+
+**Parameter estimates**
+
+```{r echo=FALSE, fig.align="center", fig.asp=1.2, message=FALSE, warning=FALSE}
+
+# **Parameter estimates**
+
+plist <- list()
+
+getparsfromfit <- function(fit) {
+  # a  <- gsub("fit_", "", fit) 
+  df <- 
+    data.frame(stockassessment::partable(fit)) %>% 
+    add_rownames() %>%  
+    separate(rowname, into=c("parameter", "parnumber"), sep="_")
+  return(df)
+}
+
+pars2 <- tibble()
+for (a in assessments) {
+  assign(paste0("pars2_",a), mutate(getparsfromfit(get(paste0("fit_", a))), file=a))  
+  pars2 <- 
+    bind_rows(
+      pars2, 
+      get(paste0("pars2_",a)) %>% mutate(parnumber = factor(parnumber, levels=unique(.$parnumber))) %>% lowcase())
+}
+ 
+
+# plot
+plist[[1]] <-
+  pars2 %>% 
+  filter(tolower(parameter) %in% c("logfpar", "logsdlogfsta","logsdlogn", "logsdlogobs","transfirardist")) %>%
+
+  ggplot(aes(x=parnumber, y=exppar, group=file)) +
+  
+  theme_publication() +
+  theme(legend.title=element_blank()) +
+  theme(legend.position="none") +
+  # theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(strip.text.y.right = element_text(angle = 0)) +
+  theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
+  
+  geom_bar(aes(fill=file), stat="identity", position="dodge") +
+  geom_errorbar(aes(ymin=low, ymax=high, colour=file, group=file), position=position_dodge()) +
+  geom_point(aes(colour=file), position=position_dodge(0.9)) +
+  scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
+  coord_flip()+
+  labs(x="",y="") +
+  facet_grid(parameter~., scales="free",space = "free")
+
+plist[[2]] <-
+  pars2 %>%
+  filter(tolower(parameter) %in% c("itrans")) %>%
+
+  ggplot(aes(x=parnumber, y=exppar, group=file)) +
+  
+  theme_publication() +
+  theme(legend.title=element_blank()) +
+  theme(legend.position="none") +
+  # theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(strip.text.y.right = element_text(angle = 0)) +
+  theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
+  
+  geom_bar(aes(fill=file), stat="identity", position="dodge") +
+  geom_errorbar(aes(ymin=low, ymax=high, colour=file, group=file), position=position_dodge()) +
+  geom_point(aes(colour=file), position=position_dodge(0.9)) +
+  scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
+  coord_flip()+
+  labs(x="",y="") +
+  facet_grid(parameter~., scales="free",space = "free")
+
+print(patchwork::wrap_plots(plist) +
+  patchwork::plot_layout(ncol = 1, heights = c(0.92, 0.08)) +
+  patchwork::plot_annotation() & theme(plot.tag = element_text(size = 8)))
+
+```
+
+
+\newpage
+
+**Comparisons of the assessment with previous year assessment**
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+# plot of trend by variable
+rby %>% 
+  # filter(stock %in% c("ARU.27.5b6a_WGDEEP_2020_","ARU.27.5b6a_WGDEEP_2020_mp")) %>% 
+  filter(variable %in% c("catch", "ssb","fbar","rec")) %>% 
+  mutate(variable = factor(variable, levels=c("catch", "ssb","fbar","rec"))) %>% 
+  mutate(year = ifelse(year < 1000, year+1994, year)) %>% 
+  
+  ggplot(aes(x=year,y=est, group=file)) +
+  theme_publication() +
+  theme(legend.title=element_blank()) +
+  geom_ribbon(aes(ymin=low, ymax=high, fill=file), alpha=0.3) +
+  geom_line(aes(colour=file)) +
+  geom_point(aes(colour=file)) +
+  
+  geom_point(data=obscatch, aes(x=year,y=est), inherit.aes = FALSE, shape=3) +
+  
+  scale_y_continuous(labels = addUnits) +
+  expand_limits(y=0) +
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=2)
+
+# stockassessment::fbartable(fit)
+
+
+```
+
+\newpage
+
+
+**Summary of the assessment (figure)**
+
+```{r, echo=FALSE, fig.asp=1.2, fig.align="center", message=FALSE, warning=FALSE}
+
+
+# plot of trend by variable
+rby %>% 
+  filter(file %in% assessments[2]) %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec"))) %>% 
+  
+  ggplot(aes(x=year,y=est, group=file)) +
+  theme_publication() +
+  theme(legend.title=element_blank()) +
+  geom_ribbon(aes(ymin=low, ymax=high, fill=file), alpha=0.3) +
+  geom_line(aes(colour=file)) +
+  geom_point(aes(colour=file)) +
+  geom_hline(data=filter(rp, grepl("msy", refpoint)), aes(yintercept=value), linetype="dashed") +
+  geom_hline(data=filter(rp, grepl("lim", refpoint)), aes(yintercept=value)) +
+  
+  geom_hline(data=filter(rp, grepl("msy", refpoint)), aes(yintercept=value), linetype="dashed") +
+  geom_hline(data=filter(rp, grepl("lim", refpoint)), aes(yintercept=value)) +
+  
+  scale_y_continuous(labels = addUnits) +
+  expand_limits(y=0) +
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=1)
+
+# stockassessment::fbartable(fit)
+
+
+```
+
+\newpage
+
+**Retro of the Assessments**
+
+```{r, echo=FALSE, fig.asp=1.2, fig.align="center", message=FALSE, warning=FALSE}
+
+rho <- 
+  mohn(get(paste("retro", assessments[2], sep="_"))) %>% 
+  as.data.frame() %>% 
+  setNames("rho") %>% 
+  rownames_to_column(var="variable") %>% 
+  mutate(
+    variable = case_when(
+      grepl("^R", variable) ~ "rec",
+      grepl("^S", variable) ~ "ssb",
+      grepl("^F", variable) ~ "fbar"
+    )
+  ) %>% 
+  mutate(rho = round(rho, digits=3)) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec")))
+
+
+t <-
+  retro_rby %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+  filter(file == assessments[[2]]) %>% 
+  ungroup() %>% 
+  mutate(plottype = ifelse(finalyear == max(finalyear), "last", NA)) %>% 
+  mutate(finalyear = as.character(finalyear)) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec")))
+  
+# plot of trend by variable
+t %>% 
+  ggplot(aes(x=year,y=est, group=finalyear)) +
+  theme_publication() +
+  theme(legend.position = "none") +
+  theme(legend.title=element_blank()) +
+  
+  # last year
+  geom_ribbon(data=filter(t, !is.na(plottype)), 
+              aes(ymin=low, ymax=high), fill="gray", alpha=0.3) +
+  geom_line(data=filter(t, !is.na(plottype)),
+            colour="black", size=1) +
+  
+  # othyer years
+  geom_line(data=filter(t, is.na(plottype)),
+            aes(colour=finalyear),
+            size=0.8) +
+
+  # geom_point(aes(colour=finalyear)) +
+  scale_y_continuous(labels = addUnits) +
+  
+  geom_text(data=rho, aes(label=paste("mohn=", rho), x=-Inf, y=Inf), hjust=0, vjust=1, inherit.aes = FALSE) +
+  expand_limits(y=0) +
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=1)
+
+# stockassessment::fbartable(fit)
+
+
+```
+
+\newpage
+
+**Leave one out runs**
+
+```{r, echo=FALSE, fig.asp=1.4, fig.align="center", message=FALSE, warning=FALSE}
+
+t <-
+  loo_rby %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+  filter(file == assessments[[2]]) %>% 
+  mutate(variable = factor(variable, levels=c("ssb","fbar","rec")))
+  
+x <-
+  get(paste("rby", assessments[2], sep="_")) %>% 
+  filter(variable %in% c("ssb","fbar","rec")) %>% 
+   mutate(variable = factor(variable, levels=c("ssb","fbar","rec")))
+
+
+# plot of LOO
+t %>% 
+  ggplot(aes(x=year,y=est, group=leftout)) +
+  theme_publication() +
+  # theme(legend.position = "none") +
+  theme(legend.title=element_blank()) +
+  
+  geom_ribbon(data=x,aes(x=year, ymin=low, ymax=high), fill="gray", alpha=0.3, inherit.aes = FALSE) +
+  geom_line(data=x,aes(x=year, y=est), colour="black", size=1, inherit.aes = FALSE) +
+  
+  geom_line(aes(colour=leftout), size=0.8) +
+  # geom_point(aes(colour=leftout)) +
+  scale_y_continuous(labels = addUnits) +
+  expand_limits(y=0) +
+  labs(x="", y="") +
+  facet_wrap(~variable, scales="free_y", ncol=1)
+
+# stockassessment::fbartable(fit)
+
+
+```
+
+
+
+
+
+
+```{r eval=FALSE, fig.align="center", fig.asp=0.9, message=FALSE, warning=FALSE, include=FALSE}
+
+# NOT USED 
+
+# generate plots for observations and predictions
+
+t <-
+  opr %>%
+  filter(file==nam) %>% 
+  rename(obs=o, pred=p) 
+
+t1 <- t %>% filter(!is.na(age)) %>% distinct(fleet)
+t2 <- t %>% filter(is.na(age)) %>% distinct(fleet)
+
+# age based residuals
+# f <- t1$fleet[1]
+for (f in t1$fleet) {
+  p <-
+    t %>% 
+    filter(fleet == f) %>% 
+    
+    ggplot(aes(x=year, y=obs)) +
+    theme_publication() +
+    geom_point(colour="red", shape=21) +
+    geom_line(aes(y=pred), colour="black") +
+    # scale_y_continuous(limits = c(-max(abs(t$res), na.rm=TRUE), max(abs(t$res), na.rm=TRUE))) +
+    scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+    labs(title=f, x="", y="log") +
+    facet_wrap(~age, ncol=5)
+  
+  print(p)
+  
+}
+
+# biomass residuals
+t %>% 
+  filter(fleet %in% t2$fleet) %>% 
+  mutate(age = "biomass") %>% 
+
+  ggplot(aes(x=year, y=obs)) +
+  theme_publication() +
+  geom_point(colour="red", shape=21) +
+  geom_line(aes(y=pred), colour="black") +
+  scale_x_continuous(breaks=scales::pretty_breaks(n=3)) +
+  labs(x="", y="log") +
+  facet_wrap(~fleet, nrow=1, scales="free_y")
+  
+
+
+```
+
+
+```{r eval=FALSE, fig.align="center", fig.asp=1.2, message=FALSE, warning=FALSE, include=FALSE}
+
+# NOT USED
+
+# **Parameter estimates by fleet**
+
+pars %>% 
+  mutate(fleet = ifelse(grepl("Combine", fleet), "Faroe-EU CPUE", fleet)) %>% 
+  ggplot(aes(x=age, y=est)) +
+  
+  theme_publication() +
+  theme(legend.title=element_blank()) +
+  theme(legend.position="none") +
+  # theme(axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust=1, size=10)) +
+  theme(strip.text.y.right = element_text(angle = 0)) +
+  theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) +
+  
+  geom_bar(aes(fill=file), stat="identity", position="dodge") +
+  geom_errorbar(aes(ymin=low, ymax=high, colour=file, group=file), position=position_dodge()) +
+  geom_point(aes(colour=file), position=position_dodge(0.9)) +
+  scale_colour_manual(values=c( "#56B4E9", "#999999", "#E69F00"))+
+  # coord_flip()+
+  labs(x="",y="") +
+  facet_grid(what~fleet, scales="free_y")
+
+```

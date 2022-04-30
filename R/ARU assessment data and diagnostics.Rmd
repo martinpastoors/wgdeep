@@ -849,7 +849,7 @@ t %>%
 
 \newpage
 
-Forecast
+Forecast (Fsq)
 
 ```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
 
@@ -865,8 +865,8 @@ Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
 fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
 ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
 labs <- c("Fsq",  "Fzero", "Fmsy", "Fp0.5",  paste0("F=",as.character(seq(0.01,0.3,0.01))) )
-# ft   <- c(  fsq, 0.000001,   0.2,  0.241,  0.33)
-# labs <- c("Fsq",  "Fzero","Fmsy1","Fmsy2", "Fp0.5" )
+# ft   <- c( fsq,  0.000001,   0.241,   0.33)
+# labs <- c("Fsq",  "Fzero",  "Fmsy", "Fp0.5" )
 
 FC<-list()
 fc <- data.frame(stringsAsFactors = FALSE)
@@ -946,4 +946,393 @@ fc %>%
 
 
 
+```
+\newpage
+
+Forecast (TAC constraint)
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fit <- get(paste0("fit_", assessments[2]))
+
+dty  <- max(fit$data$years)        # Last data year
+imy  <- dty + 1                    # Intermediate year
+fcy  <- imy + 1                    # Forecast year
+cty  <- fcy + 1                    # Continuation year
+fuy  <- c(imy, fcy, cty)           # Future years
+
+Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
+fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
+ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
+labs <- c("TC-Fsq",  "TC-Fzero", "TC-Fmsy", "TC-Fp0.5",  paste0("TC-F=",as.character(seq(0.01,0.3,0.01))) )
+# ft   <- c(    fsq,     0.000001,     0.241,       0.33)
+# labs <- c("TC-Fsq",  "TC-Fzero", "TC-Fmsy", "TC-Fp0.5")
+
+FC<-list()
+fc <- data.frame(stringsAsFactors = FALSE)
+for (i in 1:length(ft)) {
+  # print(ft[i])
+  set.seed(12345)
+  
+  # forecast
+  FC[[i]] <-forecastx(
+      fit,
+      fscale = c(NA, NA, NA, NA, NA),
+      catchval = c(NA , 29626,    NA,    NA,    NA),
+      fval     = c(fsq,    NA, ft[i], ft[i], ft[i]),
+      rec.years = Ry,
+      label = labs[i],
+      processNoise = FALSE,
+      addTSB = TRUE
+    )
+
+  # as data.frame
+  fc <-
+    bind_rows(
+      fc,
+      as.data.frame(attributes(FC[[i]])$tab) %>% 
+        rownames_to_column(var="year") %>% 
+        mutate(
+          ft = get("fbar:median"), 
+          label = labs[i]
+        ) %>% 
+        tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"tsb:high") %>% 
+        tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+        tidyr::pivot_wider(names_from=type, values_from=data)
+    )
+}
+
+      # as.data.frame(attributes(FC[[3]])$tab) %>% 
+      # rownames_to_column(var="year")  %>% 
+      # mutate(
+      #   ft = get("fbar:median"), 
+      #   label = labs[i]
+      # ) 
+
+        
+# current year
+fc %>% 
+  filter(year==imy) %>% 
+  filter(label=="TC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# forecast
+fc %>% 
+  
+  filter(
+    (var %in% c("catch") & year %in% c(fcy)) |
+    (var %in% c("ssb")   & year %in% c(fcy, cty))
+  ) %>% 
+  
+  mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  
+  
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  
+  mutate(var2 = paste(var,year,sep="_")) %>% 
+  dplyr::select(-year, -var) %>% 
+
+  tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+  dplyr::select(ft,
+              label, 
+              paste("catch", fcy, sep="_"),
+                                    paste("ssb", fcy, sep="_"),
+                                    paste("ssb", cty, sep="_")) %>% 
+  pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+  
+
+
+
+```
+
+\newpage
+
+Forecast (Catch constraint)
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fit <- get(paste0("fit_", assessments[2]))
+
+dty  <- max(fit$data$years)        # Last data year
+imy  <- dty + 1                    # Intermediate year
+fcy  <- imy + 1                    # Forecast year
+cty  <- fcy + 1                    # Continuation year
+fuy  <- c(imy, fcy, cty)           # Future years
+
+Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
+fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
+ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
+labs <- c("CC-Fsq",  "CC-Fzero", "CC-Fmsy", "CC-Fp0.5",  paste0("CC-F=",as.character(seq(0.01,0.3,0.01))) )
+# ft   <- c(    fsq,     0.000001,     0.241,       0.33)
+# labs <- c("TC-Fsq",  "TC-Fzero", "TC-Fmsy", "TC-Fp0.5")
+
+# Catch constraint 2022
+cc <- 13081
+# cc <- 20000
+  
+FC<-list()
+fc <- data.frame(stringsAsFactors = FALSE)
+for (i in 1:length(ft)) {
+  # print(ft[i])
+  set.seed(12345)
+  
+  # forecast
+  FC[[i]] <-forecastx(
+      fit,
+      fscale = c(NA, NA, NA, NA, NA),
+      catchval = c(NA , cc,    NA,    NA,    NA),
+      fval     = c(fsq, NA, ft[i], ft[i], ft[i]),
+      rec.years = Ry,
+      label = labs[i],
+      processNoise = FALSE,
+      addTSB = TRUE
+    )
+
+  # as data.frame
+  fc <-
+    bind_rows(
+      fc,
+      as.data.frame(attributes(FC[[i]])$tab) %>% 
+        rownames_to_column(var="year") %>% 
+        mutate(
+          ft = get("fbar:median"), 
+          label = labs[i]
+        ) %>% 
+        tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"tsb:high") %>% 
+        tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+        tidyr::pivot_wider(names_from=type, values_from=data)
+    )
+}
+
+      # as.data.frame(attributes(FC[[3]])$tab) %>% 
+      # rownames_to_column(var="year")  %>% 
+      # mutate(
+      #   ft = get("fbar:median"), 
+      #   label = labs[i]
+      # ) 
+
+        
+# current year
+fc %>% 
+  filter(year==imy) %>% 
+  filter(label=="CC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# forecast
+fc %>% 
+  
+  filter(
+    (var %in% c("catch") & year %in% c(fcy)) |
+    (var %in% c("ssb")   & year %in% c(fcy, cty))
+  ) %>% 
+  
+  mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  
+  
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  
+  mutate(var2 = paste(var,year,sep="_")) %>% 
+  dplyr::select(-year, -var) %>% 
+
+  tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+  dplyr::select(ft,
+              label, 
+              paste("catch", fcy, sep="_"),
+                                    paste("ssb", fcy, sep="_"),
+                                    paste("ssb", cty, sep="_")) %>% 
+  pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+  
+
+
+
+```
+
+\newpage
+
+Forecast (Modified catch constraint based on uptake regression)
+
+```{r, echo=FALSE, fig.asp=0.8, fig.align="center", message=FALSE, warning=FALSE}
+
+fit <- get(paste0("fit_", assessments[2]))
+
+dty  <- max(fit$data$years)        # Last data year
+imy  <- dty + 1                    # Intermediate year
+fcy  <- imy + 1                    # Forecast year
+cty  <- fcy + 1                    # Continuation year
+fuy  <- c(imy, fcy, cty)           # Future years
+
+Ry   <- fit$data$years[(length(fit$data$years)-10):(length(fit$data$years)-1)]
+fsq  <- stockassessment::fbartable(fit)[nrow(fbartable(fit)),1]
+ft   <- c(  fsq, 0.000001,   0.24,    0.33,  seq(0.01,0.3,0.01) )
+labs <- c("CC-Fsq",  "CC-Fzero", "CC-Fmsy", "CC-Fp0.5",  paste0("CC-F=",as.character(seq(0.01,0.3,0.01))) )
+# ft   <- c(    fsq,     0.000001,     0.241,       0.33)
+# labs <- c("TC-Fsq",  "TC-Fzero", "TC-Fmsy", "TC-Fp0.5")
+
+# Catch constraint 2022
+# cc <- 18873
+cc <- 20000
+
+FC<-list()
+fc <- data.frame(stringsAsFactors = FALSE)
+for (i in 1:length(ft)) {
+  # print(ft[i])
+  set.seed(12345)
+  
+  # forecast
+  FC[[i]] <-forecastx(
+      fit,
+      fscale = c(NA, NA, NA, NA, NA),
+      catchval = c(NA , cc,    NA,    NA,    NA),
+      fval     = c(fsq, NA, ft[i], ft[i], ft[i]),
+      rec.years = Ry,
+      label = labs[i],
+      processNoise = FALSE,
+      addTSB = TRUE
+    )
+
+  # as data.frame
+  fc <-
+    bind_rows(
+      fc,
+      as.data.frame(attributes(FC[[i]])$tab) %>% 
+        rownames_to_column(var="year") %>% 
+        mutate(
+          ft = get("fbar:median"), 
+          label = labs[i]
+        ) %>% 
+        tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"tsb:high") %>% 
+        tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+        tidyr::pivot_wider(names_from=type, values_from=data)
+    )
+}
+
+      # as.data.frame(attributes(FC[[3]])$tab) %>% 
+      # rownames_to_column(var="year")  %>% 
+      # mutate(
+      #   ft = get("fbar:median"), 
+      #   label = labs[i]
+      # ) 
+
+        
+# current year
+fc %>% 
+  filter(year==imy) %>% 
+  filter(label=="CC-Fsq") %>% 
+  filter(var != "tsb") %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high, -ft, -label) %>% 
+  pandoc.table(.,
+                 style = "simple",
+                 split.tables=120, 
+                 justify = "right",
+                 missing=".")
+
+# forecast
+fc %>% 
+  
+  filter(
+    (var %in% c("catch") & year %in% c(fcy)) |
+    (var %in% c("ssb")   & year %in% c(fcy, cty))
+  ) %>% 
+  
+  mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+  mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+  
+  
+  mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+  dplyr::select(-median, -low, -high) %>% 
+  
+  mutate(var2 = paste(var,year,sep="_")) %>% 
+  dplyr::select(-year, -var) %>% 
+
+  tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+  dplyr::select(ft,
+              label, 
+              paste("catch", fcy, sep="_"),
+                                    paste("ssb", fcy, sep="_"),
+                                    paste("ssb", cty, sep="_")) %>% 
+  pandoc.table(.,
+               style = "simple",
+               split.tables=120, 
+               justify = "right",
+               missing=".")
+  
+
+
+# x <-hcr(
+#     fit,
+#     nYears = 3,
+#     Ftarget = 0.24,
+#     Btrigger = 82999,
+#     Blim = 0,
+#     preForecast = list(catchval = 30000),
+#     rec.years = Ry
+#   )
+#   
+# as.data.frame(attributes(x$forecast)$tab) %>% 
+#   rownames_to_column(var="year") %>% 
+#   mutate(
+#     ft = get("fbar:median"), 
+#     label = labs[i]
+#   ) %>% 
+#   tidyr::pivot_longer(names_to="var1", values_to="data", "fbar:median":"catch:high") %>% 
+#   tidyr::separate(var1, into=c("var","type"), sep=":") %>% 
+#   tidyr::pivot_wider(names_from=type, values_from=data) %>% 
+#   filter(
+#     (var %in% c("catch") & year %in% c(fcy)) |
+#     (var %in% c("ssb")   & year %in% c(fcy, cty))
+#   ) %>% 
+#   
+#   mutate(ft = ifelse(label=="Fzero","0.0",ft)) %>% 
+#   mutate(ft = ifelse(label=="Fsq",format(as.numeric(ft), digits=3),ft)) %>% 
+#   
+#   
+#   mutate(value = paste0(median, " (", low,"-", high,")")) %>% 
+#   dplyr::select(-median, -low, -high) %>% 
+#   
+#   mutate(var2 = paste(var,year,sep="_")) %>% 
+#   dplyr::select(-year, -var) %>% 
+# 
+#   tidyr::pivot_wider(names_from=var2, values_from=value) %>% 
+#   dplyr::select(ft,
+#               label, 
+#               paste("catch", fcy, sep="_"),
+#                                     paste("ssb", fcy, sep="_"),
+#                                     paste("ssb", cty, sep="_")) %>% 
+#   pandoc.table(.,
+#                style = "simple",
+#                split.tables=120, 
+#                justify = "right",
+#                missing=".")
+
+  
 ```
