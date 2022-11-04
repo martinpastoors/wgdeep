@@ -24,8 +24,9 @@ source("r/theme_publication.r")
 
 options(max.print=999999)
 
+datapath  <- "//community.ices.dk@SSL/ExpertGroups/WGDEEP/2022 Meeting docs/06. Data/aru.27.5b6a/InterCatch/aru.27.5b6a_all_ 2022-4-8 14_16_09 age"
 # datapath  <- "//community.ices.dk@SSL/DavWWWRoot/ExpertGroups/WGDEEP/2019 Meeting docs/08. Personal folders/LiseHelenOfstad/InterCatch"
-datapath <- "C:/DATA/Onedrive - PFA/Documents/iWGDEEP/2021/06. Data/aru.27.5b6a/InterCatch/aru.27.5b6a_all_ 2021-4-24 2020 data"
+# datapath <- "C:/DATA/Onedrive - PFA/Documents/iWGDEEP/2021/06. Data/aru.27.5b6a/InterCatch/aru.27.5b6a_all_ 2021-4-24 2020 data"
 
 # ---------------------------------------------------------------------------------
 # Load tables
